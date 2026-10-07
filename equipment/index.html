@@ -1,0 +1,441 @@
+<title>מחסן שפיר</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans+Hebrew:wght@400;500;600;700&family=Secular+One&display=swap">
+<style>
+/* Layout: one-column clipboard. Tabs on top; "בחוץ עכשיו" (what is out right now) is the home screen. */
+:root{
+  --bg:#edefed; --surface:#fbfcfb; --ink:#1c2220; --muted:#5a6561; --line:#d3d9d6; --field:#ffffff;
+  --accent:#c9741a; --accent-ink:#ffffff; --accent-soft:#f6e6d2;
+  --ok:#2b7448; --ok-soft:#e1f0e6; --warn:#ad4019; --warn-soft:#f7e2d9;
+  --f-display:"Secular One","IBM Plex Sans Hebrew",system-ui,sans-serif;
+  --f-body:"IBM Plex Sans Hebrew",system-ui,-apple-system,"Segoe UI",Arial,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#161a19; --surface:#1f2523; --ink:#e6ebe8; --muted:#9aa6a1; --line:#323b38; --field:#191e1d;
+  --accent:#e8953c; --accent-ink:#1b1206; --accent-soft:#3a2a17;
+  --ok:#6cc690; --ok-soft:#1d3226; --warn:#f08a62; --warn-soft:#3b2219; color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#161a19; --surface:#1f2523; --ink:#e6ebe8; --muted:#9aa6a1; --line:#323b38; --field:#191e1d;
+  --accent:#e8953c; --accent-ink:#1b1206; --accent-soft:#3a2a17;
+  --ok:#6cc690; --ok-soft:#1d3226; --warn:#f08a62; --warn-soft:#3b2219; color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:15px;line-height:1.5}
+.wrap{max-width:860px;margin-inline:auto;padding-inline:16px;padding-block:20px 48px;display:flex;flex-direction:column;gap:18px}
+header.top{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap}
+h1{font-family:var(--f-display);font-weight:400;font-size:1.9rem;margin:0;letter-spacing:.01em}
+h1 span{color:var(--accent)}
+.sub{color:var(--muted);font-size:.9rem}
+h2{font-size:1.05rem;margin:0;font-weight:700;text-wrap:balance}
+.num{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+
+nav.tabs{display:flex;gap:4px;border-block-end:1px solid var(--line);overflow-x:auto}
+nav.tabs button{all:unset;cursor:pointer;padding:10px 14px;font-weight:600;color:var(--muted);border-block-end:3px solid transparent;white-space:nowrap}
+nav.tabs button[aria-selected="true"]{color:var(--ink);border-block-end-color:var(--accent)}
+nav.tabs button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.badge{display:inline-block;min-width:1.4em;padding-inline:6px;margin-inline-start:6px;border-radius:99px;background:var(--accent-soft);color:var(--accent);font-family:var(--f-mono);font-size:.78rem;text-align:center}
+
+.banner{padding:10px 14px;border-radius:8px;background:var(--warn-soft);color:var(--warn);font-weight:500}
+.summary{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--muted);font-size:.92rem}
+.summary b{color:var(--ink);font-family:var(--f-mono);font-weight:500}
+.summary .late b{color:var(--warn)}
+
+input,select,textarea{font:inherit;color:var(--ink);background:var(--field);border:1px solid var(--line);border-radius:7px;padding:9px 11px;width:100%;min-width:0}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:0;border-color:transparent}
+label{display:flex;flex-direction:column;gap:5px;font-size:.85rem;font-weight:600;color:var(--muted);min-width:0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.grid .wide{grid-column:1/-1}
+.btn{all:unset;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:10px 16px;border-radius:7px;font-weight:600;background:var(--accent);color:var(--accent-ink);text-align:center}
+.btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+.btn.small{padding:6px 11px;font-size:.85rem}
+.btn.danger{background:transparent;color:var(--warn);border:1px solid var(--line)}
+.btn.danger.armed{background:var(--warn);color:var(--surface);border-color:var(--warn)}
+.btn:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.err{color:var(--warn);font-size:.88rem;min-height:1.2em}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:14px}
+
+.list{display:flex;flex-direction:column;gap:8px}
+.loan{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 14px;display:grid;grid-template-columns:1fr auto;gap:6px 14px;align-items:start}
+.loan.late{border-inline-start:4px solid var(--warn)}
+.loan .what{font-weight:700;font-size:1.02rem;min-width:0;overflow-wrap:anywhere}
+.loan .meta{color:var(--muted);font-size:.88rem;display:flex;flex-wrap:wrap;gap:2px 14px;min-width:0}
+.loan .meta span{overflow-wrap:anywhere}
+.loan .side{display:flex;flex-direction:column;align-items:flex-end;gap:8px}
+.chip{display:inline-block;padding:2px 9px;border-radius:99px;font-size:.78rem;font-weight:600;white-space:nowrap}
+.chip.late{background:var(--warn-soft);color:var(--warn)}
+.chip.part{background:var(--accent-soft);color:var(--accent)}
+.chip.done{background:var(--ok-soft);color:var(--ok)}
+.chip.out{background:var(--line);color:var(--ink)}
+.retform{grid-column:1/-1;border-block-start:1px dashed var(--line);padding-block-start:10px;display:grid;grid-template-columns:120px 1fr auto;gap:10px;align-items:end}
+@media (max-width:520px){.retform{grid-template-columns:1fr}.loan{grid-template-columns:1fr}.loan .side{flex-direction:row;align-items:center;justify-content:space-between}}
+
+.empty{border:1px dashed var(--line);border-radius:10px;padding:26px 18px;text-align:center;color:var(--muted);display:flex;flex-direction:column;gap:8px;align-items:center}
+.empty strong{color:var(--ink);font-size:1.02rem}
+
+.msg{background:var(--ok-soft);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:10px}
+.msg h2{color:var(--ok)}
+.msg pre{margin:0;white-space:pre-wrap;font-family:var(--f-body);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:10px 12px;user-select:all}
+.msg .note{font-size:.84rem;color:var(--muted)}
+
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;min-width:720px;font-size:.88rem}
+th,td{text-align:start;padding:8px 10px;border-block-end:1px solid var(--line);vertical-align:top}
+th{font-size:.75rem;letter-spacing:.04em;color:var(--muted);font-weight:600;background:var(--bg);position:sticky;top:0}
+tr:last-child td{border-block-end:0}
+td.n{font-family:var(--f-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
+.mlist{display:flex;flex-direction:column;gap:2px;max-height:280px;overflow:auto}
+.mlist div{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 2px;border-block-end:1px solid var(--line)}
+.mlist div span{min-width:0;overflow-wrap:anywhere}
+.x{all:unset;cursor:pointer;color:var(--muted);padding:2px 8px;border-radius:5px;font-size:.82rem}
+.x:hover,.x:focus-visible{color:var(--warn);background:var(--warn-soft)}
+.x.armed{color:var(--surface);background:var(--warn)}
+.ltr{direction:ltr;unicode-bidi:isolate}
+@media (prefers-reduced-motion:no-preference){.loan,.msg{animation:in .18s ease-out}@keyframes in{from{transform:translateY(4px);opacity:.6}}}
+</style>
+
+<div class="wrap" dir="rtl" lang="he">
+  <header class="top">
+    <h1>מחסן <span>שפיר</span></h1>
+    <div class="sub" id="sync">מתחבר למאגר…</div>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <nav class="tabs" role="tablist">
+    <button role="tab" id="t-out" aria-selected="true" data-tab="out">בחוץ עכשיו<span class="badge" id="b-out">0</span></button>
+    <button role="tab" id="t-take" aria-selected="false" data-tab="take">רישום לקיחה</button>
+    <button role="tab" id="t-hist" aria-selected="false" data-tab="hist">יומן</button>
+    <button role="tab" id="t-manage" aria-selected="false" data-tab="manage">הגדרות</button>
+  </nav>
+
+  <div id="msgbox" hidden></div>
+
+  <!-- בחוץ עכשיו -->
+  <section id="v-out" class="list" style="gap:14px">
+    <div class="summary" id="summary"></div>
+    <input id="q-out" type="search" placeholder="חיפוש לפי עובד, אתר או פריט">
+    <div class="list" id="out-list"></div>
+  </section>
+
+  <!-- רישום לקיחה -->
+  <section id="v-take" hidden>
+    <form class="panel" id="take-form" novalidate>
+      <h2>מי לקח מה, ולאן</h2>
+      <div class="grid">
+        <label class="wide">פריט<input id="f-item" list="dl-items" autocomplete="off" placeholder="למשל: פטישון חציבה, צמנט לבן 25 ק״ג"></label>
+        <label>כמות<input id="f-qty" type="number" inputmode="decimal" min="0.01" step="any" value="1"></label>
+        <label>יחידה<input id="f-unit" list="dl-units" autocomplete="off" value="יח׳"></label>
+        <label>עובד<input id="f-worker" list="dl-workers" autocomplete="off" placeholder="שם העובד"></label>
+        <label>אתר / כתובת<input id="f-site" list="dl-sites" autocomplete="off" placeholder="לאן זה הולך"></label>
+        <label>מתי נלקח<input id="f-when" type="datetime-local"></label>
+        <label class="wide">הערה (לא חובה)<input id="f-note" autocomplete="off" placeholder="מספר תיק, מצב הציוד, וכו׳"></label>
+      </div>
+      <div class="err" id="take-err"></div>
+      <div class="row"><button class="btn" type="submit" id="take-btn">רישום לקיחה</button></div>
+    </form>
+  </section>
+
+  <!-- יומן -->
+  <section id="v-hist" class="list" style="gap:12px" hidden>
+    <div class="row">
+      <input id="q-hist" type="search" placeholder="חיפוש ביומן" style="flex:1 1 220px">
+      <select id="f-status" style="flex:0 1 170px" aria-label="סינון לפי מצב">
+        <option value="all">כל הרשומות</option>
+        <option value="open">עדיין בחוץ</option>
+        <option value="closed">הוחזר במלואו</option>
+      </select>
+      <button class="btn ghost small" id="csv-btn" type="button" hidden>ייצוא לאקסל (CSV)</button>
+    </div>
+    <div id="hist-body"></div>
+  </section>
+
+  <!-- הגדרות -->
+  <section id="v-manage" class="list" style="gap:14px" hidden>
+    <form class="panel" id="cfg-form" novalidate>
+      <h2>למי שולחים הודעה</h2>
+      <div class="grid">
+        <label>שם המקבל<input id="c-name" autocomplete="off" placeholder="למשל: מנהל המחסן"></label>
+        <label>טלפון וואטסאפ<input id="c-phone" class="ltr" inputmode="tel" autocomplete="off" placeholder="050-0000000"></label>
+        <label>ימים עד שסומן באיחור<input id="c-days" type="number" min="1" step="1" value="7"></label>
+      </div>
+      <div class="err" id="cfg-err"></div>
+      <div class="row"><button class="btn" type="submit">שמירה</button><span class="sub" id="cfg-ok"></span></div>
+    </form>
+    <div class="cols">
+      <div class="panel"><h2>פריטים</h2><div class="mlist" id="m-items"></div></div>
+      <div class="panel"><h2>עובדים</h2><div class="mlist" id="m-workers"></div></div>
+      <div class="panel"><h2>אתרים</h2><div class="mlist" id="m-sites"></div></div>
+    </div>
+    <p class="sub" style="margin:0">פריטים, עובדים ואתרים חדשים נוספים לרשימות לבד ברגע שרושמים לקיחה. כאן אפשר למחוק שמות כפולים או שגויים.</p>
+  </section>
+
+  <datalist id="dl-items"></datalist><datalist id="dl-workers"></datalist><datalist id="dl-sites"></datalist>
+  <datalist id="dl-units"><option value="יח׳"><option value="ק״ג"><option value="שק"><option value="מ״ר"><option value="מ״א"><option value="ליטר"><option value="קרטון"><option value="סט"></datalist>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const S = { items: [], workers: [], sites: [], loans: [], config: {}, loaded: false, canWrite: true, tab: "out" };
+  let db = null, downloads = null;
+
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmtDate = iso => { const d = new Date(iso); return isNaN(d) ? "" : d.toLocaleString("he-IL", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }); };
+  const fmtNum = n => (Math.round(n * 100) / 100).toLocaleString("he-IL");
+  const returnedQty = l => (l.returned || []).reduce((a, r) => a + (Number(r.qty) || 0), 0);
+  const remaining = l => Math.max(0, (Number(l.qty) || 0) - returnedQty(l));
+  const isOpen = l => remaining(l) > 0.0001;
+  const overdueDays = () => Math.max(1, Number(S.config.overdueDays) || 7);
+  const daysOut = l => Math.floor((Date.now() - new Date(l.takenAt).getTime()) / 86400000);
+  const isLate = l => isOpen(l) && daysOut(l) >= overdueDays();
+  const norm = s => s.trim().replace(/\s+/g, " ");
+  const localNow = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+
+  /* ---------- tabs ---------- */
+  function setTab(t) {
+    S.tab = t;
+    document.querySelectorAll("nav.tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === t)));
+    for (const v of ["out", "take", "hist", "manage"]) $("v-" + v).hidden = v !== t;
+    if (t === "take" && !$("f-when").value) $("f-when").value = localNow();
+    try { localStorage.setItem("shapir-tab", t); } catch (e) {}
+  }
+  document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+  /* ---------- message to send ---------- */
+  function waLink(text) {
+    let p = String(S.config.phone || "").replace(/\D/g, "");
+    if (p.startsWith("0")) p = "972" + p.slice(1);
+    return "https://wa.me/" + (p || "") + "?text=" + encodeURIComponent(text);
+  }
+  function showMessage(title, text) {
+    const box = $("msgbox");
+    const to = S.config.name || S.config.phone ? `ל${esc(S.config.name || "")} <span class="ltr">${esc(S.config.phone || "")}</span>` : "לבחירת איש קשר בוואטסאפ";
+    box.innerHTML = `<div class="msg" role="status"><h2>${esc(title)}</h2>
+      <pre id="msg-text">${esc(text)}</pre>
+      <div class="row">
+        <a class="btn" href="${esc(waLink(text))}" target="_blank" rel="noopener">פתיחה בוואטסאפ</a>
+        <button class="btn ghost" type="button" id="msg-copy">העתקת ההודעה</button>
+        <button class="btn ghost" type="button" id="msg-close">סגירה</button>
+      </div>
+      <div class="note">ההודעה מוכנה ${to}. היא נשלחת רק אחרי שלוחצים "שלח" בוואטסאפ.</div></div>`;
+    box.hidden = false;
+    $("msg-copy").onclick = async () => {
+      try { await navigator.clipboard.writeText(text); $("msg-copy").textContent = "הועתק"; }
+      catch (e) { const r = document.createRange(); r.selectNodeContents($("msg-text")); const s = getSelection(); s.removeAllRanges(); s.addRange(r); $("msg-copy").textContent = "מסומן, העתיקו ידנית"; }
+    };
+    $("msg-close").onclick = () => { box.hidden = true; box.innerHTML = ""; };
+    box.scrollIntoView({ block: "nearest" });
+  }
+
+  /* ---------- render ---------- */
+  function renderDatalists() {
+    $("dl-items").innerHTML = S.items.map(i => `<option value="${esc(i.name)}">`).join("");
+    $("dl-workers").innerHTML = S.workers.map(i => `<option value="${esc(i.name)}">`).join("");
+    $("dl-sites").innerHTML = S.sites.map(i => `<option value="${esc(i.name)}">`).join("");
+  }
+
+  const matches = (l, q) => !q || [l.item, l.worker, l.site, l.note].some(v => String(v || "").toLowerCase().includes(q));
+  const openRet = new Set();
+
+  function renderOut() {
+    const open = S.loans.filter(isOpen);
+    $("b-out").textContent = open.length;
+    const late = open.filter(isLate).length;
+    const workers = new Set(open.map(l => l.worker)).size, sites = new Set(open.map(l => l.site)).size;
+    $("summary").innerHTML = open.length
+      ? `<span>רשומות פתוחות <b>${open.length}</b></span><span>אצל <b>${workers}</b> עובדים</span><span>ב-<b>${sites}</b> אתרים</span><span class="late">באיחור (${overdueDays()}+ ימים) <b>${late}</b></span>`
+      : "";
+    const q = $("q-out").value.trim().toLowerCase();
+    const rows = open.filter(l => matches(l, q)).sort((a, b) => (isLate(b) - isLate(a)) || (a.takenAt < b.takenAt ? 1 : -1));
+    const list = $("out-list");
+    if (!S.loaded) { list.innerHTML = `<div class="empty"><strong>טוען רשומות…</strong></div>`; return; }
+    if (!open.length) {
+      list.innerHTML = `<div class="empty"><strong>שום ציוד לא בחוץ כרגע</strong><span>כל לקיחה שתירשם תופיע כאן עד שהיא תוחזר במלואה.</span>${S.canWrite ? `<button class="btn" type="button" id="go-take">רישום לקיחה ראשונה</button>` : ""}</div>`;
+      const g = $("go-take"); if (g) g.onclick = () => setTab("take");
+      return;
+    }
+    if (!rows.length) { list.innerHTML = `<div class="empty"><strong>אין התאמות לחיפוש</strong></div>`; return; }
+    list.innerHTML = rows.map(l => {
+      const rq = returnedQty(l), rem = remaining(l), d = daysOut(l);
+      const chips = [isLate(l) ? `<span class="chip late">באיחור · ${d} ימים</span>` : `<span class="chip out">${d === 0 ? "נלקח היום" : `בחוץ ${d} ימים`}</span>`];
+      if (rq > 0) chips.push(`<span class="chip part">הוחזר <span class="num">${fmtNum(rq)}/${fmtNum(l.qty)}</span></span>`);
+      const ret = openRet.has(l.id) ? `<form class="retform" data-ret="${esc(l.id)}" novalidate>
+          <label>כמה הוחזר<input name="qty" type="number" min="0.01" step="any" max="${rem}" value="${rem}"></label>
+          <label>הערה<input name="note" autocomplete="off" placeholder="מצב הציוד, מי החזיר"></label>
+          <div class="row"><button class="btn small" type="submit">אישור החזרה</button><button class="btn ghost small" type="button" data-cancel="${esc(l.id)}">ביטול</button></div>
+          <div class="err" style="grid-column:1/-1"></div></form>` : "";
+      return `<article class="loan${isLate(l) ? " late" : ""}">
+        <div><div class="what">${esc(l.item)} <span class="num">× ${fmtNum(rem)}</span> ${esc(l.unit || "")}</div>
+          <div class="meta"><span>עובד: ${esc(l.worker)}</span><span>אתר: ${esc(l.site)}</span><span>נלקח: <span class="num">${fmtDate(l.takenAt)}</span></span>${l.note ? `<span>${esc(l.note)}</span>` : ""}</div></div>
+        <div class="side"><div class="row" style="gap:6px;justify-content:flex-end">${chips.join("")}</div>
+          ${S.canWrite && !openRet.has(l.id) ? `<button class="btn ghost small" type="button" data-open="${esc(l.id)}">רישום החזרה</button>` : ""}</div>
+        ${ret}</article>`;
+    }).join("");
+  }
+
+  function renderHist() {
+    const q = $("q-hist").value.trim().toLowerCase(), st = $("f-status").value;
+    const rows = S.loans.filter(l => matches(l, q) && (st === "all" || (st === "open") === isOpen(l)));
+    const body = $("hist-body");
+    if (!S.loaded) { body.innerHTML = `<div class="empty"><strong>טוען…</strong></div>`; return; }
+    if (!S.loans.length) { body.innerHTML = `<div class="empty"><strong>היומן ריק</strong><span>כל לקיחה והחזרה נרשמות כאן עם תאריך ושעה, ולא נמחקות כשהציוד חוזר.</span></div>`; return; }
+    if (!rows.length) { body.innerHTML = `<div class="empty"><strong>אין רשומות שמתאימות לסינון</strong></div>`; return; }
+    body.innerHTML = `<div class="tablewrap"><table><thead><tr><th>נלקח</th><th>פריט</th><th>כמות</th><th>עובד</th><th>אתר</th><th>החזרות</th><th>מצב</th>${S.canWrite ? "<th></th>" : ""}</tr></thead><tbody>${rows.map(l => {
+      const rets = (l.returned || []).map(r => `<div><span class="num">${fmtNum(r.qty)}</span> · <span class="num">${fmtDate(r.at)}</span>${r.note ? ` · ${esc(r.note)}` : ""}</div>`).join("") || "—";
+      const status = !isOpen(l) ? `<span class="chip done">הוחזר</span>` : isLate(l) ? `<span class="chip late">באיחור</span>` : returnedQty(l) ? `<span class="chip part">חלקי</span>` : `<span class="chip out">בחוץ</span>`;
+      return `<tr><td class="n">${fmtDate(l.takenAt)}</td><td>${esc(l.item)}${l.note ? `<div class="sub">${esc(l.note)}</div>` : ""}</td><td class="n">${fmtNum(l.qty)} ${esc(l.unit || "")}</td><td>${esc(l.worker)}</td><td>${esc(l.site)}</td><td>${rets}</td><td>${status}</td>${S.canWrite ? `<td><button class="x" type="button" data-delloan="${esc(l.id)}">מחיקה</button></td>` : ""}</tr>`;
+    }).join("")}</tbody></table></div>`;
+  }
+
+  function renderManage() {
+    const mk = (arr, col) => arr.length ? arr.map(i => `<div><span>${esc(i.name)}</span>${S.canWrite ? `<button class="x" type="button" data-del="${col}/${esc(i.id)}">מחיקה</button>` : ""}</div>`).join("") : `<span class="sub">עדיין ריק</span>`;
+    $("m-items").innerHTML = mk(S.items, "items");
+    $("m-workers").innerHTML = mk(S.workers, "workers");
+    $("m-sites").innerHTML = mk(S.sites, "sites");
+  }
+
+  function renderConfigForm() {
+    if (document.activeElement && document.activeElement.closest("#cfg-form")) return;
+    $("c-name").value = S.config.name || "";
+    $("c-phone").value = S.config.phone || "";
+    $("c-days").value = S.config.overdueDays || 7;
+  }
+
+  function render() { renderOut(); renderHist(); renderManage(); }
+
+  /* ---------- writes ---------- */
+  async function upsert(col, name, extra) {
+    const list = S[col];
+    if (list.some(i => i.name === name)) return;
+    await db.collection(col).add({ name, ...(extra || {}) });
+  }
+
+  $("take-form").addEventListener("submit", async e => {
+    e.preventDefault();
+    const err = $("take-err"); err.textContent = "";
+    if (!db) { err.textContent = "אין חיבור למאגר, אז אי אפשר לשמור."; return; }
+    const item = norm($("f-item").value), worker = norm($("f-worker").value), site = norm($("f-site").value);
+    const unit = norm($("f-unit").value) || "יח׳", note = norm($("f-note").value), qty = Number($("f-qty").value);
+    const when = $("f-when").value ? new Date($("f-when").value) : new Date();
+    if (!item) return void (err.textContent = "חסר שם פריט.");
+    if (!(qty > 0)) return void (err.textContent = "הכמות צריכה להיות גדולה מאפס.");
+    if (!worker) return void (err.textContent = "חסר שם העובד שלקח.");
+    if (!site) return void (err.textContent = "חסר אתר או כתובת.");
+    if (isNaN(when)) return void (err.textContent = "התאריך לא תקין.");
+    const btn = $("take-btn"); btn.disabled = true; btn.textContent = "שומר…";
+    try {
+      await db.collection("loans").add({ item, qty, unit, worker, site, note, takenAt: when.toISOString(), returned: [], closedAt: null });
+      await upsert("items", item, { unit });
+      await upsert("workers", worker);
+      await upsert("sites", site);
+      $("f-item").value = ""; $("f-qty").value = "1"; $("f-note").value = ""; $("f-when").value = localNow();
+      showMessage("הלקיחה נרשמה",
+        `לקיחת ציוד – שפיר\nעובד: ${worker}\nפריט: ${item} × ${fmtNum(qty)} ${unit}\nאתר: ${site}\nמתי: ${fmtDate(when.toISOString())}` + (note ? `\nהערה: ${note}` : ""));
+      setTab("out");
+    } catch (x) {
+      err.textContent = x && x.code === "quota_exceeded" ? "המאגר מלא. מחקו רשומות ישנות מהיומן ונסו שוב." : x && x.code === "invalid_argument" ? "אין לך הרשאה לרשום. בקשו מבעל העמוד הרשאת Contributor." : "השמירה נכשלה. בדקו חיבור ונסו שוב.";
+    } finally { btn.disabled = false; btn.textContent = "רישום לקיחה"; }
+  });
+
+  $("out-list").addEventListener("click", e => {
+    const o = e.target.closest("[data-open]"), c = e.target.closest("[data-cancel]");
+    if (o) { openRet.add(o.dataset.open); renderOut(); const f = document.querySelector(`[data-ret="${CSS.escape(o.dataset.open)}"] input`); f && f.focus(); }
+    if (c) { openRet.delete(c.dataset.cancel); renderOut(); }
+  });
+  $("out-list").addEventListener("submit", async e => {
+    const f = e.target.closest("[data-ret]"); if (!f) return;
+    e.preventDefault();
+    const err = f.querySelector(".err"), l = S.loans.find(x => x.id === f.dataset.ret);
+    if (!l) return;
+    const qty = Number(f.qty.value), note = norm(f.note.value), rem = remaining(l);
+    if (!(qty > 0)) return void (err.textContent = "הכמות צריכה להיות גדולה מאפס.");
+    if (qty > rem + 0.0001) return void (err.textContent = `נשארו בחוץ רק ${fmtNum(rem)}.`);
+    const at = new Date().toISOString();
+    const returned = [...(l.returned || []), { qty, at, note }];
+    const full = qty >= rem - 0.0001;
+    f.querySelector("button[type=submit]").disabled = true;
+    try {
+      await db.doc("loans/" + l.id).update({ returned, closedAt: full ? at : null });
+      openRet.delete(l.id);
+      showMessage(full ? "ההחזרה נרשמה, הרשומה נסגרה" : "החזרה חלקית נרשמה",
+        `החזרת ציוד – שפיר\nעובד: ${l.worker}\nפריט: ${l.item} × ${fmtNum(qty)} ${l.unit || ""}\nמאתר: ${l.site}\nמתי: ${fmtDate(at)}` + (full ? "" : `\nעדיין בחוץ: ${fmtNum(rem - qty)}`) + (note ? `\nהערה: ${note}` : ""));
+    } catch (x) {
+      err.textContent = "השמירה נכשלה. נסו שוב.";
+      f.querySelector("button[type=submit]").disabled = false;
+    }
+  });
+
+  function armDelete(btn, run) {
+    if (btn.classList.contains("armed")) { btn.disabled = true; run().catch(() => { btn.textContent = "נכשל"; }); return; }
+    btn.classList.add("armed"); btn.textContent = "בטוח?";
+    setTimeout(() => { if (btn.isConnected) { btn.classList.remove("armed"); btn.textContent = "מחיקה"; } }, 3000);
+  }
+  $("v-manage").addEventListener("click", e => { const b = e.target.closest("[data-del]"); if (b) armDelete(b, () => db.doc(b.dataset.del).delete()); });
+  $("hist-body").addEventListener("click", e => { const b = e.target.closest("[data-delloan]"); if (b) armDelete(b, () => db.doc("loans/" + b.dataset.delloan).delete()); });
+
+  $("cfg-form").addEventListener("submit", async e => {
+    e.preventDefault();
+    const err = $("cfg-err"); err.textContent = ""; $("cfg-ok").textContent = "";
+    if (!db) return void (err.textContent = "אין חיבור למאגר.");
+    const phone = norm($("c-phone").value), days = Math.round(Number($("c-days").value));
+    if (phone && phone.replace(/\D/g, "").length < 9) return void (err.textContent = "מספר הטלפון קצר מדי.");
+    if (!(days >= 1)) return void (err.textContent = "מספר הימים צריך להיות 1 ומעלה.");
+    try { await db.doc("config/main").set({ name: norm($("c-name").value), phone, overdueDays: days }); $("cfg-ok").textContent = "נשמר"; document.activeElement.blur(); }
+    catch (x) { err.textContent = "השמירה נכשלה. רק מי שיש לו הרשאת עריכה יכול לשנות הגדרות."; }
+  });
+
+  $("q-out").addEventListener("input", renderOut);
+  $("q-hist").addEventListener("input", renderHist);
+  $("f-status").addEventListener("change", renderHist);
+
+  $("csv-btn").addEventListener("click", async () => {
+    const cell = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const head = ["נלקח", "פריט", "כמות", "יחידה", "עובד", "אתר", "הערה", "הוחזר", "נשאר בחוץ", "החזרות", "נסגר"];
+    const lines = S.loans.map(l => [fmtDate(l.takenAt), l.item, l.qty, l.unit, l.worker, l.site, l.note, returnedQty(l), remaining(l),
+      (l.returned || []).map(r => `${r.qty} @ ${fmtDate(r.at)}${r.note ? " (" + r.note + ")" : ""}`).join(" | "), l.closedAt ? fmtDate(l.closedAt) : ""].map(cell).join(","));
+    const data = "﻿" + [head.map(cell).join(","), ...lines].join("\r\n");
+    try { await downloads.save({ filename: `מחסן-שפיר-${new Date().toISOString().slice(0, 10)}.csv`, data }); }
+    catch (x) { if (x && x.code === "unavailable") $("csv-btn").hidden = true; }
+  });
+
+  /* ---------- boot ---------- */
+  try { const t = localStorage.getItem("shapir-tab"); if (t && $("v-" + t)) setTab(t); } catch (e) {}
+  render();
+
+  async function boot() {
+    if (!window.claude || !claude.use) { $("sync").textContent = "לא מחובר"; showBanner("העמוד צריך להיפתח מתוך Claude כדי לשמור ולקרוא רשומות."); S.loaded = true; render(); return; }
+    db = await claude.use("db");
+    if (!db) { $("sync").textContent = "לא מחובר"; showBanner("המאגר לא זמין בתצוגה הזו. התחברו ל-Claude ופתחו את הקישור שוב."); S.loaded = true; render(); return; }
+    const user = await claude.use("user");
+    const can = user ? await user.can("data.write") : null;
+    if (can === false) { S.canWrite = false; showBanner("יש לך הרשאת צפייה בלבד. כדי לרשום לקיחות והחזרות בקשו הרשאת Contributor."); $("t-take").hidden = true; }
+    downloads = await claude.use("downloads");
+    $("csv-btn").hidden = !downloads;
+
+    const onErr = e => { if (e && e.code === "revoked") { S.canWrite = false; showBanner("הגישה למאגר הוסרה."); } $("sync").textContent = "החיבור נותק, רעננו את העמוד"; };
+    db.collection("loans").orderBy("takenAt", "desc").limit(1000).onSnapshot(s => {
+      S.loans = s.docs.map(d => ({ id: d.id, ...d.data() })); S.loaded = true;
+      $("sync").textContent = "מעודכן · " + new Date().toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+      renderOut(); renderHist();
+    }, onErr);
+    for (const col of ["items", "workers", "sites"]) {
+      db.collection(col).onSnapshot(s => {
+        S[col] = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => String(a.name).localeCompare(String(b.name), "he"));
+        renderDatalists(); renderManage();
+      }, onErr);
+    }
+    db.doc("config/main").onSnapshot(s => { S.config = s.exists ? s.data() : {}; renderConfigForm(); renderOut(); }, onErr);
+  }
+  function showBanner(t) { const b = $("banner"); b.textContent = t; b.hidden = false; }
+  boot();
+})();
+</script>
