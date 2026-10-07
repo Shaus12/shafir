@@ -1,0 +1,11 @@
+{
+  "name": "שפיר · הצעות מחיר",
+  "short_name": "שפיר",
+  "lang": "he",
+  "dir": "rtl",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#edefed",
+  "theme_color": "#1c2220",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

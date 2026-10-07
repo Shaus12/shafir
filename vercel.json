@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "cleanUrls": false,
+  "redirects": [{ "source": "/", "destination": "/app/", "permanent": false }],
+  "headers": [
+    { "source": "/(.*)\\.mjs", "headers": [{ "key": "Content-Type", "value": "text/javascript; charset=utf-8" }] },
+    { "source": "/app/manifest.webmanifest", "headers": [{ "key": "Content-Type", "value": "application/manifest+json" }] }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "shafir",
+  "private": true,
+  "type": "module",
+  "description": "Shapir damage-restoration agent: SKN quotes for Binarit, equipment log",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "skn": "node src/skn/cli.mjs"
+  }
+}
