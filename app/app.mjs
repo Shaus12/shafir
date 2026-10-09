@@ -1,6 +1,7 @@
 import { sknToQuote, quoteToSkn, quoteTotals, parseAmount, SUBCHAPTERS, UNIT_OPTIONS, newId } from "../src/skn/model.mjs";
 import { listQuotes, getQuote, saveQuote, deleteQuote } from "./store.mjs";
 import { printQuote, shareFile, itemLabel } from "./pdf.mjs";
+import { quoteToXlsx, XLSX_MIME } from "./xlsx.mjs";
 
 const app = document.getElementById("app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -11,6 +12,9 @@ const plain = n => (n ? String(n) : "");
 let quote = null;        // the quote open in the editor
 let openSubs = new Set(); // "ci-num" keys of expanded subchapters, kept across re-renders
 let saveTimer = null;
+const ACCESS_CODE_KEY = "shafir-field-access-code";
+const MAX_RECORDING_MS = 5 * 60 * 1000;
+const MAX_AUDIO_BYTES = 3 * 1024 * 1024;
 
 /* ---------- toast ---------- */
 let toastTimer = null;
@@ -122,6 +126,7 @@ function renderEditor() {
       <label>לקוח / כתובת<input id="m-title" value="${esc(quote.title)}" placeholder="שם הלקוח - רחוב ועיר"></label>
       <label>מספר תיק<input id="m-proj" inputmode="numeric" value="${plain(quote.projectNo)}"></label>
     </div>
+    <button class="btn ghost wide field-record" id="field-record">● תיעוד מהשטח</button>
     ${quote.chapters.map((ch, ci) => `<section class="chapter" data-ci="${ci}">
       <h2><span class="num">${two(ch.num)}</span><input data-chtitle="${ci}" value="${esc(ch.title)}" aria-label="שם הפרק"></h2>
       ${ch.subchapters.map((sub, si) => `<details class="sub" data-ci="${ci}" data-si="${si}" data-key="${ci}-${sub.num}"${openSubs.has(`${ci}-${sub.num}`) ? " open" : ""}>
@@ -248,6 +253,7 @@ app.addEventListener("click", async e => {
     location.hash = "";
   }, "למחוק לצמיתות?");
   if (e.target.id === "export") openExportSheet();
+  if (e.target.id === "field-record") openFieldRecord();
 });
 
 function arm(btn, run, label = "בטוח?") {
@@ -256,6 +262,222 @@ function arm(btn, run, label = "בטוח?") {
   btn.classList.add("armed");
   btn.textContent = label;
   setTimeout(() => { if (btn.isConnected) { btn.classList.remove("armed"); btn.textContent = was; } }, 3000);
+}
+
+/* ---------- field record ---------- */
+function preferredAudioType() {
+  const types = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm", "audio/ogg;codecs=opus"];
+  return types.find(type => window.MediaRecorder?.isTypeSupported?.(type)) || "";
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("לא הצלחנו לקרוא את ההקלטה."));
+    reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function openFieldRecord() {
+  const bg = document.createElement("div");
+  let accessCode = localStorage.getItem(ACCESS_CODE_KEY) || "";
+  let mode = "audio";
+  let recorder = null;
+  let stream = null;
+  let chunks = [];
+  let audioBlob = null;
+  let startedAt = 0;
+  let timer = null;
+
+  bg.className = "sheet-bg";
+  bg.innerHTML = `<div class="sheet record-sheet" role="dialog" aria-modal="true" aria-label="תיעוד מהשטח">
+    <div class="sheet-head"><h3>תיעוד מהשטח</h3><button class="x" data-r="close" aria-label="סגירה">סגירה</button></div>
+    <p>הקליטו בעברית את הנזק והעבודה הנדרשת, עד 5 דקות, או הקלידו תיאור.</p>
+    <div class="record-tabs"><button class="btn" data-mode="audio">הקלטה</button><button class="btn ghost" data-mode="text">הקלדה</button></div>
+    <div data-pane="audio">
+      <button class="record-button" data-r="record"><span>●</span><b>התחלת הקלטה</b></button>
+      <div class="record-status" data-status>מוכנים להקלטה</div>
+    </div>
+    <label data-pane="text" hidden>תיאור הנזק והעבודה<textarea rows="7" data-text placeholder="לדוגמה: יש לפרק 12 מ״ר טיח רופף ולבצע טיח חדש..."></textarea></label>
+    ${accessCode ? "" : `<label data-code-label>קוד גישה<input data-code type="password" autocomplete="current-password" inputmode="text"></label>`}
+    <button class="btn wide" data-r="send" disabled>המשך לבדיקה</button>
+  </div>`;
+  document.body.appendChild(bg);
+
+  const status = bg.querySelector("[data-status]");
+  const send = bg.querySelector('[data-r="send"]');
+  const record = bg.querySelector('[data-r="record"]');
+  const textArea = bg.querySelector("[data-text]");
+  const setReady = () => { send.disabled = mode === "audio" ? !audioBlob : !textArea.value.trim(); };
+  const formatTime = ms => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, "0")}`;
+
+  function stopTracks() {
+    clearInterval(timer);
+    stream?.getTracks().forEach(track => track.stop());
+    stream = null;
+  }
+  function close() {
+    if (recorder?.state === "recording") recorder.stop();
+    stopTracks();
+    bg.remove();
+  }
+  async function startRecording() {
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      return toast("הקלטה אינה נתמכת בדפדפן הזה. אפשר להקליד את התיאור במקום.", true);
+    }
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+      const mimeType = preferredAudioType();
+      try {
+        recorder = new MediaRecorder(stream, { ...(mimeType ? { mimeType } : {}), audioBitsPerSecond: 24000 });
+      } catch {
+        recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      }
+      chunks = [];
+      audioBlob = null;
+      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+      recorder.onerror = () => { stopTracks(); toast("ההקלטה נכשלה. נסו שוב.", true); };
+      recorder.onstop = () => {
+        stopTracks();
+        audioBlob = new Blob(chunks, { type: recorder.mimeType || chunks[0]?.type || "audio/webm" });
+        record.classList.remove("recording");
+        record.querySelector("b").textContent = "הקלטה מחדש";
+        status.textContent = `ההקלטה מוכנה · ${formatTime(Math.min(Date.now() - startedAt, MAX_RECORDING_MS))}`;
+        if (audioBlob.size > MAX_AUDIO_BYTES) {
+          audioBlob = null;
+          status.textContent = "ההקלטה ארוכה מדי";
+          toast("ההקלטה ארוכה מדי. אפשר להקליט עד 5 דקות.", true);
+        }
+        setReady();
+      };
+      recorder.start(1000);
+      startedAt = Date.now();
+      record.classList.add("recording");
+      record.querySelector("b").textContent = "עצירת הקלטה";
+      status.textContent = "מקליט · 0:00 מתוך 5:00";
+      timer = setInterval(() => {
+        const elapsed = Date.now() - startedAt;
+        status.textContent = `מקליט · ${formatTime(Math.min(elapsed, MAX_RECORDING_MS))} מתוך 5:00`;
+        if (elapsed >= MAX_RECORDING_MS && recorder.state === "recording") {
+          recorder.stop();
+          toast("ההקלטה נעצרה אחרי 5 דקות — זהו האורך המרבי.", true);
+        }
+      }, 500);
+    } catch (error) {
+      stopTracks();
+      if (error?.name === "NotAllowedError" || error?.name === "SecurityError") {
+        toast("לא ניתנה הרשאה למיקרופון. יש לאפשר גישה למיקרופון בהגדרות הדפדפן.", true);
+      } else {
+        toast("לא ניתן להפעיל את המיקרופון. אפשר להקליד את התיאור במקום.", true);
+      }
+    }
+  }
+
+  bg.addEventListener("input", setReady);
+  bg.addEventListener("click", async event => {
+    const modeButton = event.target.closest("[data-mode]");
+    if (modeButton) {
+      mode = modeButton.dataset.mode;
+      if (recorder?.state === "recording") recorder.stop();
+      bg.querySelectorAll("[data-mode]").forEach(button => button.classList.toggle("ghost", button !== modeButton));
+      bg.querySelectorAll("[data-pane]").forEach(pane => (pane.hidden = pane.dataset.pane !== mode));
+      setReady();
+      return;
+    }
+    const action = event.target.closest("[data-r]")?.dataset.r;
+    if (event.target === bg || action === "close") return close();
+    if (action === "record") {
+      if (recorder?.state === "recording") recorder.stop(); else await startRecording();
+      return;
+    }
+    if (action !== "send") return;
+    const code = accessCode || bg.querySelector("[data-code]")?.value.trim();
+    if (!code) return toast("יש להזין קוד גישה.", true);
+    send.disabled = true;
+    send.textContent = "מעבד את הרשומה…";
+    try {
+      const payload = mode === "text"
+        ? { text: textArea.value.trim() }
+        : { audio: await blobToBase64(audioBlob), mimeType: audioBlob.type };
+      const response = await fetch("/api/field-record", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Access-Code": code },
+        body: JSON.stringify(payload),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (response.status === 401) {
+          localStorage.removeItem(ACCESS_CODE_KEY);
+          accessCode = "";
+          if (!bg.querySelector("[data-code]")) {
+            send.insertAdjacentHTML("beforebegin", `<label data-code-label>קוד גישה<input data-code type="password" autocomplete="current-password" inputmode="text"></label>`);
+          }
+        }
+        throw new Error(result.error || (response.status === 401 ? "קוד הגישה שגוי." : "אירעה תקלה בשרת. נסו שוב."));
+      }
+      localStorage.setItem(ACCESS_CODE_KEY, code);
+      close();
+      openFieldReview(result);
+    } catch (error) {
+      send.disabled = false;
+      send.textContent = "המשך לבדיקה";
+      const message = error instanceof TypeError ? "אירעה תקלה בחיבור לשרת. בדקו את החיבור ונסו שוב." : error.message;
+      toast(message || "אירעה תקלה בשרת. נסו שוב.", true);
+      if (!accessCode && bg.isConnected) bg.querySelector("[data-code]")?.focus();
+    }
+  });
+}
+
+function openFieldReview(result) {
+  let items = Array.isArray(result.items) ? result.items : [];
+  const bg = document.createElement("div");
+  bg.className = "review-bg";
+
+  function render() {
+    const groups = SUBCHAPTERS.flatMap(([num, title]) => {
+      const group = items.filter(item => item.subchapter === num);
+      if (!group.length) return [];
+      return [`<section class="review-group"><h3><span class="num">${two(num)}</span> · ${esc(title)}</h3>${group.map(item => {
+        const index = items.indexOf(item);
+        const unit = UNIT_OPTIONS.find(([code]) => code === item.unit)?.[1] || item.unit;
+        return `<div class="review-item"><div><strong>${esc(item.description)}</strong><span>${item.quantity ? `<span class="num">${esc(item.quantity)}</span> ${esc(unit)}` : `<mark>כמות לא צוינה · 0</mark>`}</span></div><button class="x" data-remove="${index}">הסרה</button></div>`;
+      }).join("")}</section>`];
+    }).join("");
+    bg.innerHTML = `<div class="review" role="dialog" aria-modal="true" aria-label="בדיקת תיעוד מהשטח">
+      <header class="bar"><button class="back" data-review="back">→ חזרה</button><h1>בדיקה לפני הוספה</h1></header>
+      <section class="transcript"><h2>תמלול</h2><p>${esc(result.transcript || "לא התקבל תמלול.")}</p></section>
+      <section class="proposals"><h2>סעיפים מוצעים</h2>${groups || `<div class="empty"><strong>לא נמצאו עבודות להוספה</strong>אפשר לחזור ולהקליט או להקליד תיאור אחר.</div>`}</section>
+      <div class="review-actions"><button class="btn ghost" data-review="back">ביטול</button><button class="btn" data-review="confirm"${items.length ? "" : " disabled"}>הוספת ${items.length} סעיפים להצעה</button></div>
+    </div>`;
+  }
+  render();
+  document.body.appendChild(bg);
+  bg.addEventListener("click", event => {
+    const remove = event.target.closest("[data-remove]");
+    if (remove) {
+      items.splice(Number(remove.dataset.remove), 1);
+      return render();
+    }
+    const action = event.target.closest("[data-review]")?.dataset.review;
+    if (action === "back") return bg.remove();
+    if (action !== "confirm" || !items.length) return;
+    const chapter = quote.chapters[0];
+    for (const proposed of items) {
+      let sub = chapter.subchapters.find(candidate => candidate.num === proposed.subchapter);
+      if (!sub) {
+        sub = { num: proposed.subchapter, title: SUBCHAPTERS.find(([num]) => num === proposed.subchapter)[1], items: [] };
+        chapter.subchapters.push(sub);
+      }
+      sub.items.push({ id: newId(), unit: proposed.unit, qty: proposed.quantity, price: 0, description: proposed.description });
+      openSubs.add(`0-${sub.num}`);
+    }
+    chapter.subchapters.sort((a, b) => a.num - b.num);
+    scheduleSave();
+    bg.remove();
+    renderEditor();
+    toast(`${items.length} סעיפים נוספו להצעה עם מחיר 0`);
+  });
 }
 
 /* ---------- export ---------- */
@@ -271,6 +493,8 @@ function openExportSheet() {
     <p>ה-PDF נפתח במסך ההדפסה של הטלפון. משם שומרים כ-PDF או משתפים לוואטסאפ.</p>
     <button class="btn wide" data-x="pdf">PDF עם מחירים</button>
     <button class="btn ghost wide" data-x="pdf-noprice">PDF בלי מחירים (כתב כמויות)</button>
+    <button class="btn ghost wide" data-x="xlsx">Excel עם מחירים</button>
+    <button class="btn ghost wide" data-x="xlsx-noprice">Excel בלי מחירים</button>
     <button class="btn ghost wide" data-x="skn">קובץ SKN לבינארית</button>
     <button class="btn ghost wide" data-x="close">סגירה</button></div>`;
   document.body.appendChild(bg);
@@ -287,6 +511,10 @@ function openExportSheet() {
       if (x === "skn") {
         const bytes = quoteToSkn(quote);
         await done(await shareFile(new Blob([bytes], { type: "application/octet-stream" }), `${quote.projectNo || fileBase()}.skn`, "application/octet-stream"));
+      } else if (x === "xlsx" || x === "xlsx-noprice") {
+        const prices = x === "xlsx";
+        const suffix = prices ? "" : " - כתב כמויות";
+        await done(await shareFile(quoteToXlsx(quote, { prices }), `${fileBase()}${suffix}.xlsx`, XLSX_MIME));
       } else {
         bg.remove();
         await printQuote(quote, { prices: x === "pdf" });
