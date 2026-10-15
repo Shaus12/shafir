@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { waitUntil } from "@vercel/functions";
 import { extractProposedItems, formatProposedItemsReply } from "../../src/proposed-items.mjs";
 
 export const config = {
@@ -6,6 +7,16 @@ export const config = {
     bodyParser: false,
   },
 };
+
+const TRANSCRIPTION_MODEL = "gpt-transcribe";
+const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
+const CRM_SEND_URL = "https://crm.agent4u.co.il/api/whatsapp/send";
+const AUDIO_KINDS = new Set(["audio", "voice", "voice_note", "ptt"]);
+
+const VOICE_ACK = "קיבלתי את ההקלטה, מעבד...";
+const VOICE_DOWNLOAD_ERROR = "לא הצלחנו להוריד את ההקלטה. נסו לשלוח אותה שוב.";
+const VOICE_TRANSCRIBE_ERROR = "לא הצלחנו לתמלל את ההקלטה. נסו להקליט שוב.";
+const VOICE_PROCESS_ERROR = "לא הצלחנו לעבד את ההקלטה כרגע. נסו שוב.";
 
 function send(res, status, body) {
   res.statusCode = status;
@@ -247,6 +258,114 @@ export function extractWebhookData(payload) {
   };
 }
 
+export function isVoiceNote(payload) {
+  if (payload?.has_media !== true) return false;
+  const kind = String(payload.media_kind || payload.media?.kind || "").toLowerCase().trim();
+  return AUDIO_KINDS.has(kind) || kind.startsWith("audio/");
+}
+
+function audioFileInfo(contentType) {
+  const mime = String(contentType || "").toLowerCase().split(";", 1)[0].trim();
+  const known = {
+    "audio/ogg": "ogg",
+    "audio/opus": "opus",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/mp4": "m4a",
+    "audio/m4a": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/aac": "aac",
+    "audio/amr": "amr",
+    "audio/wav": "wav",
+    "audio/webm": "webm",
+  };
+  if (known[mime]) return { mime, ext: known[mime] };
+  return { mime: "audio/ogg", ext: "ogg" };
+}
+
+async function sendToWorker(clientId, body) {
+  try {
+    const response = await fetch(CRM_SEND_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.AGENT4U_API_KEY}`,
+      },
+      body: JSON.stringify({ client_id: clientId, body }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) console.error("Agent4U send failed", response.status);
+  } catch (error) {
+    console.error("Agent4U send failed", error?.name || "Error");
+  }
+}
+
+async function downloadAudio(mediaUrl) {
+  let response;
+  try {
+    response = await fetch(mediaUrl, { signal: AbortSignal.timeout(10_000) });
+  } catch (error) {
+    console.error("Voice note download failed", error?.name || "Error");
+    return null;
+  }
+  if (!response.ok) {
+    console.error("Voice note download failed", response.status);
+    return null;
+  }
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > MAX_AUDIO_BYTES) {
+    console.error("Voice note download failed", response.status, "bad size");
+    return null;
+  }
+  return { bytes, ...audioFileInfo(response.headers.get("content-type")) };
+}
+
+async function transcribeAudio({ bytes, mime, ext }) {
+  try {
+    const form = new FormData();
+    form.append("file", new Blob([bytes], { type: mime }), `recording.${ext}`);
+    form.append("model", TRANSCRIPTION_MODEL);
+    form.append("languages[]", "he");
+    form.append("response_format", "json");
+    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+      body: form,
+      signal: AbortSignal.timeout(25_000),
+    });
+    if (!response.ok) {
+      console.error("Voice note transcription failed", response.status);
+      return "";
+    }
+    const data = await response.json();
+    return typeof data?.text === "string" ? data.text.trim() : "";
+  } catch (error) {
+    console.error("Voice note transcription failed", error?.name || "Error");
+    return "";
+  }
+}
+
+function transcriptLine(transcript) {
+  const oneLine = transcript.replace(/\s+/g, " ").trim();
+  return `תמלול: ${oneLine.length > 200 ? `${oneLine.slice(0, 200)}…` : oneLine}`;
+}
+
+async function processVoiceNote(mediaUrl, clientId) {
+  try {
+    const audio = await downloadAudio(mediaUrl);
+    if (!audio) return sendToWorker(clientId, VOICE_DOWNLOAD_ERROR);
+
+    const transcript = await transcribeAudio(audio);
+    if (!transcript) return sendToWorker(clientId, VOICE_TRANSCRIBE_ERROR);
+
+    const { items } = await extractProposedItems(transcript);
+    return sendToWorker(clientId, `${transcriptLine(transcript)}\n\n${formatProposedItemsReply(items)}`);
+  } catch (error) {
+    console.error("Voice note processing failed", error?.name || "Error");
+    return sendToWorker(clientId, VOICE_PROCESS_ERROR);
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -289,6 +408,20 @@ export default async function handler(req, res) {
     if (!normalizedSender || normalizedSender !== demoPhone) {
       return send(res, 200, { reply: "" });
     }
+  }
+
+  if (isVoiceNote(payload)) {
+    const mediaUrl = String(payload.media_url || payload.media?.url || "");
+    const clientId = payload.client?.id;
+    if (!process.env.OPENAI_API_KEY || !process.env.AGENT4U_API_KEY) {
+      console.error("OPENAI_API_KEY or AGENT4U_API_KEY is not configured");
+      return send(res, 500, { error: "השירות אינו מוגדר כרגע." });
+    }
+    if (!/^https?:\/\//i.test(mediaUrl) || clientId === undefined || clientId === null || clientId === "") {
+      return send(res, 200, { reply: VOICE_PROCESS_ERROR });
+    }
+    waitUntil(processVoiceNote(mediaUrl, clientId));
+    return send(res, 200, { reply: VOICE_ACK });
   }
 
   if (isNonText) {

@@ -1,6 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "cleanUrls": false,
+  "functions": { "api/agent4u/webhook.mjs": { "maxDuration": 60 } },
   "redirects": [{ "source": "/", "destination": "/app/", "permanent": false }],
   "headers": [
     { "source": "/(.*)\\.mjs", "headers": [{ "key": "Content-Type", "value": "text/javascript; charset=utf-8" }] },
