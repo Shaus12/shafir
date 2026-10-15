@@ -286,6 +286,11 @@ function audioFileInfo(contentType) {
 }
 
 async function sendToWorker(clientId, body, file) {
+  const payload = { client_id: clientId, body, ...file };
+  const requestShape = {
+    fields: Object.keys(payload),
+    media_base64_length: typeof payload.media_base64 === "string" ? payload.media_base64.length : 0,
+  };
   try {
     const response = await fetch(CRM_SEND_URL, {
       method: "POST",
@@ -293,12 +298,15 @@ async function sendToWorker(clientId, body, file) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.AGENT4U_API_KEY}`,
       },
-      body: JSON.stringify({ client_id: clientId, body, ...file }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(10_000),
     });
-    if (!response.ok) console.error("Agent4U send failed", response.status);
+    if (!response.ok) {
+      const errorText = (await response.text().catch(() => "")).slice(0, 300);
+      console.error("Agent4U send failed", response.status, errorText, JSON.stringify(requestShape));
+    }
   } catch (error) {
-    console.error("Agent4U send failed", error?.name || "Error");
+    console.error("Agent4U send failed", error?.name || "Error", JSON.stringify(requestShape));
   }
 }
 
