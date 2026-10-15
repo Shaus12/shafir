@@ -13,6 +13,7 @@ export const config = {
 const TRANSCRIPTION_MODEL = "gpt-transcribe";
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
 const CRM_SEND_URL = "https://crm.agent4u.co.il/api/whatsapp/send";
+const CRM_MEDIA_URL = "https://crm.agent4u.co.il/api/whatsapp/media";
 const AUDIO_KINDS = new Set(["audio", "voice", "voice_note", "ptt"]);
 
 const VOICE_ACK = "קיבלתי את ההקלטה, מעבד...";
@@ -310,6 +311,51 @@ async function sendToWorker(clientId, body, file) {
   }
 }
 
+export function mediaIdFrom(data) {
+  for (const source of [data, data?.data]) {
+    for (const key of ["media_id", "id"]) {
+      const value = source?.[key];
+      if ((typeof value === "string" && value.trim()) || typeof value === "number") return value;
+    }
+  }
+  return null;
+}
+
+async function uploadMedia(clientId, file) {
+  let response;
+  try {
+    response = await fetch(CRM_MEDIA_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.AGENT4U_API_KEY}`,
+      },
+      body: JSON.stringify({ client_id: clientId, ...file }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    console.error("Agent4U media upload failed", error?.name || "Error");
+    return null;
+  }
+  const text = await response.text().catch(() => "");
+  let data = null;
+  try {
+    data = JSON.parse(text);
+  } catch {}
+  const mediaId = response.ok ? mediaIdFrom(data) : null;
+  if (mediaId === null) {
+    const keys = data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data) : [];
+    console.error("Agent4U media upload failed", response.status, text.slice(0, 300), JSON.stringify(keys));
+  }
+  return mediaId;
+}
+
+async function sendFile(clientId, caption, file) {
+  const mediaId = await uploadMedia(clientId, file);
+  if (mediaId === null) return;
+  await sendToWorker(clientId, caption, { media_id: mediaId });
+}
+
 export function proposedItemsToQuote(items) {
   const subchapters = [];
   for (const item of items) {
@@ -339,14 +385,14 @@ async function sendQuoteFiles(clientId, items) {
 
   try {
     const xlsx = Buffer.from(await quoteToXlsx(quote, { prices: false }).arrayBuffer());
-    await sendToWorker(clientId, "קובץ אקסל", { media_base64: xlsx.toString("base64"), mime: XLSX_MIME, filename: `${name}.xlsx` });
+    await sendFile(clientId, "קובץ אקסל", { media_base64: xlsx.toString("base64"), mime: XLSX_MIME, filename: `${name}.xlsx` });
   } catch (error) {
     console.error("Excel file build failed", error?.name || "Error");
   }
 
   try {
     const skn = Buffer.from(quoteToSkn(quote));
-    await sendToWorker(clientId, "קובץ לבינארית", { media_base64: skn.toString("base64"), mime: "application/octet-stream", filename: `${name}.skn` });
+    await sendFile(clientId, "קובץ לבינארית", { media_base64: skn.toString("base64"), mime: "application/octet-stream", filename: `${name}.skn` });
   } catch (error) {
     console.error("SKN file build failed", error?.name || "Error");
   }
