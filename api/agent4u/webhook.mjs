@@ -302,12 +302,9 @@ async function sendToWorker(clientId, body, file) {
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(10_000),
     });
-    const responseText = (await response.text().catch(() => "")).slice(0, 300);
     if (!response.ok) {
-      console.error("Agent4U send failed", response.status, responseText, JSON.stringify(requestShape));
-    } else {
-      // TEMP: debugging files that arrive as caption only.
-      console.log("Agent4U send response", response.status, responseText);
+      const errorText = (await response.text().catch(() => "")).slice(0, 300);
+      console.error("Agent4U send failed", response.status, errorText, JSON.stringify(requestShape));
     }
   } catch (error) {
     console.error("Agent4U send failed", error?.name || "Error", JSON.stringify(requestShape));
@@ -352,12 +349,6 @@ async function uploadMedia(clientId, { media_base64, mime, filename }) {
     data = JSON.parse(text);
   } catch {}
   const found = response.ok ? findMediaId(data) : null;
-  // TEMP: debugging files that arrive as caption only.
-  console.log("Agent4U media upload response", response.status, JSON.stringify({
-    keys: objectKeys(data),
-    data_keys: objectKeys(data?.data),
-    media_id_field: found?.field ?? null,
-  }));
   if (!found) {
     console.error("Agent4U media upload failed", response.status, text.slice(0, 300), JSON.stringify(objectKeys(data)));
     return null;
@@ -368,7 +359,7 @@ async function uploadMedia(clientId, { media_base64, mime, filename }) {
 async function sendFile(clientId, caption, file) {
   const mediaId = await uploadMedia(clientId, file);
   if (mediaId === null) return;
-  await sendToWorker(clientId, caption, { media_id: mediaId, mime: file.mime, filename: file.filename, media_kind: "document" });
+  await sendToWorker(clientId, caption, { media_id: mediaId, kind: "document", mime: file.mime, filename: file.filename });
 }
 
 export function proposedItemsToQuote(items) {
