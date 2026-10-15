@@ -300,21 +300,40 @@ async function sendToWorker(clientId, body) {
   }
 }
 
+export function isAgent4uMediaUrl(mediaUrl) {
+  try {
+    const url = new URL(mediaUrl);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === "https:" && (host === "agent4u.co.il" || host.endsWith(".agent4u.co.il"));
+  } catch {
+    return false;
+  }
+}
+
+function urlHost(mediaUrl) {
+  try {
+    return new URL(mediaUrl).hostname;
+  } catch {
+    return "invalid-url";
+  }
+}
+
 async function downloadAudio(mediaUrl) {
+  const headers = isAgent4uMediaUrl(mediaUrl) ? { Authorization: `Bearer ${process.env.AGENT4U_API_KEY}` } : {};
   let response;
   try {
-    response = await fetch(mediaUrl, { signal: AbortSignal.timeout(10_000) });
+    response = await fetch(mediaUrl, { headers, signal: AbortSignal.timeout(10_000) });
   } catch (error) {
-    console.error("Voice note download failed", error?.name || "Error");
+    console.error("Voice note download failed", error?.name || "Error", "host:", urlHost(mediaUrl));
     return null;
   }
   if (!response.ok) {
-    console.error("Voice note download failed", response.status);
+    console.error("Voice note download failed", response.status, "host:", urlHost(mediaUrl));
     return null;
   }
   const bytes = Buffer.from(await response.arrayBuffer());
   if (!bytes.length || bytes.length > MAX_AUDIO_BYTES) {
-    console.error("Voice note download failed", response.status, "bad size");
+    console.error("Voice note download failed", response.status, "bad size", "host:", urlHost(mediaUrl));
     return null;
   }
   return { bytes, ...audioFileInfo(response.headers.get("content-type")) };
