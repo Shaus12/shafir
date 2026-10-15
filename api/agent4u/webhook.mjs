@@ -359,10 +359,23 @@ async function uploadMedia(clientId, { media_base64, mime, filename }) {
   return found.value;
 }
 
-async function sendFile(clientId, caption, file) {
-  const mediaId = await uploadMedia(clientId, file);
+export function fileBase64(bytes) {
+  return Buffer.from(bytes).toString("base64");
+}
+
+export function base64MatchesBytes(base64, bytes) {
+  return Buffer.from(base64, "base64").equals(Buffer.from(bytes));
+}
+
+async function sendFile(clientId, caption, kind, bytes, { mime, filename }) {
+  const media_base64 = fileBase64(bytes);
+  if (!base64MatchesBytes(media_base64, bytes)) {
+    console.error("file encoding mismatch", kind);
+    return;
+  }
+  const mediaId = await uploadMedia(clientId, { media_base64, mime, filename });
   if (mediaId === null) return;
-  await postToCrmSend({ client_id: clientId, document: { id: mediaId, filename: file.filename, caption } });
+  await postToCrmSend({ client_id: clientId, document: { id: mediaId, filename, caption } });
 }
 
 export function proposedItemsToQuote(items) {
@@ -393,15 +406,15 @@ async function sendQuoteFiles(clientId, items) {
   const name = quoteFileName();
 
   try {
-    const xlsx = Buffer.from(await quoteToXlsx(quote, { prices: false }).arrayBuffer());
-    await sendFile(clientId, "קובץ אקסל", { media_base64: xlsx.toString("base64"), mime: XLSX_MIME, filename: `${name}.xlsx` });
+    const xlsx = new Uint8Array(await quoteToXlsx(quote, { prices: false }).arrayBuffer());
+    await sendFile(clientId, "קובץ אקסל", "xlsx", xlsx, { mime: XLSX_MIME, filename: `${name}.xlsx` });
   } catch (error) {
     console.error("Excel file build failed", error?.name || "Error");
   }
 
   try {
-    const skn = Buffer.from(quoteToSkn(quote));
-    await sendFile(clientId, "קובץ לבינארית", { media_base64: skn.toString("base64"), mime: "application/octet-stream", filename: `${name}.skn` });
+    const skn = quoteToSkn(quote);
+    await sendFile(clientId, "קובץ לבינארית", "skn", skn, { mime: "application/octet-stream", filename: `${name}.skn` });
   } catch (error) {
     console.error("SKN file build failed", error?.name || "Error");
   }

@@ -7,7 +7,11 @@ import handler, {
   isValidPhone,
   getKeyStructure,
   extractWebhookData,
+  proposedItemsToQuote,
+  fileBase64,
+  base64MatchesBytes,
 } from "../api/agent4u/webhook.mjs";
+import { quoteToSkn } from "../src/skn/model.mjs";
 
 test("verifySignature verifies HMAC-SHA256 correctly", () => {
   const secret = "test-secret-key-123";
@@ -168,6 +172,20 @@ test("extractWebhookData extracts sender phone and text from flat and nested CRM
     image_url: "https://example.com/photo.jpg"
   };
   assert.equal(extractWebhookData(imagePayload).isNonText, true);
+});
+
+test("SKN bytes with Hebrew survive the base64 step unchanged", () => {
+  const quote = proposedItemsToQuote([
+    { subchapter: 9, unit: "02", quantity: 5, description: "תיקון חור גדול בקיר" },
+  ]);
+  const bytes = quoteToSkn(quote);
+  const base64 = fileBase64(bytes);
+  const decoded = Buffer.from(base64, "base64");
+
+  assert.ok(decoded.equals(Buffer.from(bytes)));
+  assert.ok(base64MatchesBytes(base64, bytes));
+  assert.equal(decoded.includes(Buffer.from([0xef, 0xbf, 0xbd])), false);
+  assert.ok(decoded.some(byte => byte >= 0xe0 && byte <= 0xfa), "expected windows-1255 Hebrew letters");
 });
 
 function createMockReqRes({ method = "POST", headers = {}, body = "" }) {
