@@ -1,5 +1,4 @@
-import { quoteTotals, unitLabel } from "../src/skn/model.mjs";
-import { itemLabel } from "./pdf.mjs";
+import { quoteTotals, unitLabel, itemLabel } from "./skn/model.mjs";
 
 const MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const encoder = new TextEncoder();

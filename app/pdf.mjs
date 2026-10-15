@@ -1,7 +1,7 @@
 // The quote as a printable A4 document, with or without prices, printed by the phone's own
 // engine (save as PDF / share), plus a helper that hands any file to the share sheet.
 
-import { quoteTotals, unitLabel } from "../src/skn/model.mjs";
+import { quoteTotals, unitLabel, itemLabel } from "../src/skn/model.mjs";
 
 const COMPANY = 'שפיר - שיקום נזקים בע"מ';
 
@@ -9,9 +9,6 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const money = n => n.toLocaleString("he-IL", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const qtyFmt = n => n.toLocaleString("he-IL", { maximumFractionDigits: 2 });
 const two = n => String(n).padStart(2, "0");
-
-export const itemLabel = (ch, sub, it, index) =>
-  it.code ? `${it.code.slice(2, 4)}.${it.code.slice(4, 6)}.${it.code.slice(6)}` : `${two(ch.num)}.${two(sub.num)}.${String(index + 1).padStart(3, "0")}*`;
 
 const DOC_CSS = `
 .pdfdoc{width:100%;direction:rtl;font-family:"IBM Plex Sans Hebrew",Arial,sans-serif;color:#1c2220;font-size:10pt;line-height:1.45;background:#fff}

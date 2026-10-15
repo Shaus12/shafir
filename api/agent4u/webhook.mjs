@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import { waitUntil } from "@vercel/functions";
-import { extractProposedItems, formatProposedItemsReply } from "../../src/proposed-items.mjs";
+import { extractProposedItems, formatProposedItemsReply, SUBCHAPTER_MAP } from "../../src/proposed-items.mjs";
+import { quoteToSkn } from "../../src/skn/model.mjs";
+import { quoteToXlsx, XLSX_MIME } from "../../src/xlsx.mjs";
 
 export const config = {
   api: {
@@ -283,7 +285,7 @@ function audioFileInfo(contentType) {
   return { mime: "audio/ogg", ext: "ogg" };
 }
 
-async function sendToWorker(clientId, body) {
+async function sendToWorker(clientId, body, file) {
   try {
     const response = await fetch(CRM_SEND_URL, {
       method: "POST",
@@ -291,12 +293,54 @@ async function sendToWorker(clientId, body) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.AGENT4U_API_KEY}`,
       },
-      body: JSON.stringify({ client_id: clientId, body }),
+      body: JSON.stringify({ client_id: clientId, body, ...file }),
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) console.error("Agent4U send failed", response.status);
   } catch (error) {
     console.error("Agent4U send failed", error?.name || "Error");
+  }
+}
+
+export function proposedItemsToQuote(items) {
+  const subchapters = [];
+  for (const item of items) {
+    let sub = subchapters.find(candidate => candidate.num === item.subchapter);
+    if (!sub) {
+      sub = { num: item.subchapter, title: SUBCHAPTER_MAP.get(item.subchapter), items: [] };
+      subchapters.push(sub);
+    }
+    sub.items.push({ unit: item.unit, qty: item.quantity, price: 0, description: item.description });
+  }
+  subchapters.sort((a, b) => a.num - b.num);
+  return { title: "", projectNo: 0, buildingTitle: "", chapters: [{ num: 1, title: "אומדן עלות שיקום", subchapters }] };
+}
+
+export function quoteFileName(date = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Jerusalem",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date).map(({ type, value }) => [type, value]));
+  return `הצעה-${parts.year}-${parts.month}-${parts.day}-${parts.hour}${parts.minute}`;
+}
+
+async function sendQuoteFiles(clientId, items) {
+  if (!items.length) return;
+  const quote = proposedItemsToQuote(items);
+  const name = quoteFileName();
+
+  try {
+    const xlsx = Buffer.from(await quoteToXlsx(quote, { prices: false }).arrayBuffer());
+    await sendToWorker(clientId, "קובץ אקסל", { media_base64: xlsx.toString("base64"), mime: XLSX_MIME, filename: `${name}.xlsx` });
+  } catch (error) {
+    console.error("Excel file build failed", error?.name || "Error");
+  }
+
+  try {
+    const skn = Buffer.from(quoteToSkn(quote));
+    await sendToWorker(clientId, "קובץ לבינארית", { media_base64: skn.toString("base64"), mime: "application/octet-stream", filename: `${name}.skn` });
+  } catch (error) {
+    console.error("SKN file build failed", error?.name || "Error");
   }
 }
 
@@ -378,7 +422,8 @@ async function processVoiceNote(mediaUrl, clientId) {
     if (!transcript) return sendToWorker(clientId, VOICE_TRANSCRIBE_ERROR);
 
     const { items } = await extractProposedItems(transcript);
-    return sendToWorker(clientId, `${transcriptLine(transcript)}\n\n${formatProposedItemsReply(items)}`);
+    await sendToWorker(clientId, `${transcriptLine(transcript)}\n\n${formatProposedItemsReply(items)}`);
+    return sendQuoteFiles(clientId, items);
   } catch (error) {
     console.error("Voice note processing failed", error?.name || "Error");
     return sendToWorker(clientId, VOICE_PROCESS_ERROR);
@@ -459,6 +504,10 @@ export default async function handler(req, res) {
   try {
     const { items } = await extractProposedItems(messageText);
     const reply = formatProposedItemsReply(items);
+    const clientId = payload.client?.id;
+    if (items.length && clientId !== undefined && clientId !== null && clientId !== "" && process.env.AGENT4U_API_KEY) {
+      waitUntil(sendQuoteFiles(clientId, items));
+    }
     return send(res, 200, { reply });
   } catch (error) {
     console.error("Agent4U webhook extraction failed", error);

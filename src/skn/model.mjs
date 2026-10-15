@@ -35,6 +35,11 @@ export const UNIT_OPTIONS = Object.freeze([
 
 export const unitLabel = code => UNIT_OPTIONS.find(([c]) => c === code)?.[1] ?? code;
 
+const two = n => String(n).padStart(2, "0");
+
+export const itemLabel = (ch, sub, it, index) =>
+  it.code ? `${it.code.slice(2, 4)}.${it.code.slice(4, 6)}.${it.code.slice(6)}` : `${two(ch.num)}.${two(sub.num)}.${String(index + 1).padStart(3, "0")}*`;
+
 let seq = 0;
 export const newId = () => `i${Date.now().toString(36)}${(seq++).toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 

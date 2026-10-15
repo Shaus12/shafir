@@ -1,7 +1,7 @@
-import { sknToQuote, quoteToSkn, quoteTotals, parseAmount, SUBCHAPTERS, UNIT_OPTIONS, newId } from "../src/skn/model.mjs";
+import { sknToQuote, quoteToSkn, quoteTotals, parseAmount, SUBCHAPTERS, UNIT_OPTIONS, newId, itemLabel } from "../src/skn/model.mjs";
 import { listQuotes, getQuote, saveQuote, deleteQuote } from "./store.mjs";
-import { printQuote, shareFile, itemLabel } from "./pdf.mjs";
-import { quoteToXlsx, XLSX_MIME } from "./xlsx.mjs";
+import { printQuote, shareFile } from "./pdf.mjs";
+import { quoteToXlsx, XLSX_MIME } from "../src/xlsx.mjs";
 
 const app = document.getElementById("app");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
