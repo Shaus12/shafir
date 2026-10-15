@@ -286,8 +286,11 @@ function audioFileInfo(contentType) {
   return { mime: "audio/ogg", ext: "ogg" };
 }
 
-async function sendToWorker(clientId, body, file) {
-  const payload = { client_id: clientId, body, ...file };
+function sendToWorker(clientId, body) {
+  return postToCrmSend({ client_id: clientId, body });
+}
+
+async function postToCrmSend(payload) {
   const requestShape = {
     fields: Object.keys(payload),
     media_base64_length: typeof payload.media_base64 === "string" ? payload.media_base64.length : 0,
@@ -359,7 +362,7 @@ async function uploadMedia(clientId, { media_base64, mime, filename }) {
 async function sendFile(clientId, caption, file) {
   const mediaId = await uploadMedia(clientId, file);
   if (mediaId === null) return;
-  await sendToWorker(clientId, caption, { media_id: mediaId, kind: "document", mime: file.mime, filename: file.filename });
+  await postToCrmSend({ client_id: clientId, document: { id: mediaId, filename: file.filename, caption } });
 }
 
 export function proposedItemsToQuote(items) {
@@ -535,7 +538,11 @@ export default async function handler(req, res) {
   }
 
   if (isVoiceNote(payload)) {
-    const mediaUrl = String(payload.media_url || payload.media?.url || "");
+    const mediaId = payload.media?.id;
+    const hasMediaId = (typeof mediaId === "string" && mediaId.trim() !== "") || typeof mediaId === "number";
+    const mediaUrl = hasMediaId
+      ? `${CRM_MEDIA_URL}/${encodeURIComponent(String(mediaId).trim())}`
+      : String(payload.media_url || payload.media?.url || "");
     const clientId = payload.client?.id;
     if (!process.env.OPENAI_API_KEY || !process.env.AGENT4U_API_KEY) {
       console.error("OPENAI_API_KEY or AGENT4U_API_KEY is not configured");
