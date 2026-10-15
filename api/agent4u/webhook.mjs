@@ -321,7 +321,7 @@ export function mediaIdFrom(data) {
   return null;
 }
 
-async function uploadMedia(clientId, file) {
+async function uploadMedia(clientId, { media_base64, mime, filename }) {
   let response;
   try {
     response = await fetch(CRM_MEDIA_URL, {
@@ -330,7 +330,7 @@ async function uploadMedia(clientId, file) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.AGENT4U_API_KEY}`,
       },
-      body: JSON.stringify({ client_id: clientId, ...file }),
+      body: JSON.stringify({ client_id: clientId, base64: media_base64, mime, filename }),
       signal: AbortSignal.timeout(15_000),
     });
   } catch (error) {
