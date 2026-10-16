@@ -3,6 +3,7 @@ import { waitUntil } from "@vercel/functions";
 import { extractProposedItems, formatProposedItemsReply, SUBCHAPTER_MAP } from "../../src/proposed-items.mjs";
 import { quoteToSkn } from "../../src/skn/model.mjs";
 import { quoteToXlsx, XLSX_MIME } from "../../src/xlsx.mjs";
+import { extractDocument, formatDocumentReply, detectDocumentMime, MAX_DOCUMENT_BYTES } from "../../src/document-extraction.mjs";
 
 export const config = {
   api: {
@@ -20,6 +21,13 @@ const VOICE_ACK = "קיבלתי את ההקלטה, מעבד...";
 const VOICE_DOWNLOAD_ERROR = "לא הצלחנו להוריד את ההקלטה. נסו לשלוח אותה שוב.";
 const VOICE_TRANSCRIBE_ERROR = "לא הצלחנו לתמלל את ההקלטה. נסו להקליט שוב.";
 const VOICE_PROCESS_ERROR = "לא הצלחנו לעבד את ההקלטה כרגע. נסו שוב.";
+
+const DOCUMENT_KINDS = new Set(["image", "photo", "document", "file", "pdf"]);
+const DOC_ACK = "קיבלתי את המסמך, קורא...";
+const DOC_DOWNLOAD_ERROR = "לא הצלחנו להוריד את המסמך. נסו לשלוח אותו שוב.";
+const DOC_TOO_LARGE = "הקובץ גדול מדי. אפשר לשלוח קובץ עד 10MB.";
+const DOC_UNSUPPORTED = "אפשר לשלוח תמונה (JPG, PNG, WEBP) או קובץ PDF בלבד.";
+const DOC_PROCESS_ERROR = "לא הצלחנו לקרוא את המסמך כרגע. נסו שוב.";
 
 function send(res, status, body) {
   res.statusCode = status;
@@ -306,8 +314,7 @@ async function postToCrmSend(payload) {
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) {
-      const errorText = (await response.text().catch(() => "")).slice(0, 300);
-      console.error("Agent4U send failed", response.status, errorText, JSON.stringify(requestShape));
+      console.error("Agent4U send failed", response.status, JSON.stringify(requestShape));
     }
   } catch (error) {
     console.error("Agent4U send failed", error?.name || "Error", JSON.stringify(requestShape));
@@ -506,6 +513,53 @@ async function processVoiceNote(mediaUrl, clientId) {
   }
 }
 
+export function isDocumentMedia(payload) {
+  if (payload?.has_media !== true) return false;
+  const kind = String(payload.media_kind || payload.media?.kind || "").toLowerCase().trim();
+  return DOCUMENT_KINDS.has(kind) || kind.startsWith("image/") || kind === "application/pdf";
+}
+
+async function downloadDocument(mediaId) {
+  let response;
+  try {
+    response = await fetch(`${CRM_MEDIA_URL}/${encodeURIComponent(mediaId)}`, {
+      headers: { Authorization: `Bearer ${process.env.AGENT4U_API_KEY}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    console.error("Document download failed", error?.name || "Error");
+    return { error: DOC_DOWNLOAD_ERROR };
+  }
+  if (!response.ok) {
+    console.error("Document download failed", response.status);
+    return { error: DOC_DOWNLOAD_ERROR };
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.length) {
+    console.error("Document download failed", response.status, "empty");
+    return { error: DOC_DOWNLOAD_ERROR };
+  }
+  if (bytes.length > MAX_DOCUMENT_BYTES) {
+    console.error("Document download failed", response.status, "too large");
+    return { error: DOC_TOO_LARGE };
+  }
+  return { bytes };
+}
+
+async function processDocument(mediaId, clientId) {
+  try {
+    const download = await downloadDocument(mediaId);
+    if (download.error) return sendToWorker(clientId, download.error);
+    if (!detectDocumentMime(download.bytes)) return sendToWorker(clientId, DOC_UNSUPPORTED);
+
+    const doc = await extractDocument(download.bytes);
+    return sendToWorker(clientId, formatDocumentReply(doc));
+  } catch (error) {
+    console.error("Document processing failed", error?.status || error?.name || "Error");
+    return sendToWorker(clientId, DOC_PROCESS_ERROR);
+  }
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -566,6 +620,21 @@ export default async function handler(req, res) {
     }
     waitUntil(processVoiceNote(mediaUrl, clientId));
     return send(res, 200, { reply: VOICE_ACK });
+  }
+
+  if (isDocumentMedia(payload)) {
+    const rawMediaId = payload.media?.id;
+    const mediaId = (typeof rawMediaId === "string" || typeof rawMediaId === "number") ? String(rawMediaId).trim() : "";
+    const clientId = payload.client?.id;
+    if (!process.env.OPENAI_API_KEY || !process.env.AGENT4U_API_KEY) {
+      console.error("OPENAI_API_KEY or AGENT4U_API_KEY is not configured");
+      return send(res, 500, { error: "השירות אינו מוגדר כרגע." });
+    }
+    if (!mediaId || clientId === undefined || clientId === null || clientId === "") {
+      return send(res, 200, { reply: DOC_PROCESS_ERROR });
+    }
+    waitUntil(processDocument(mediaId, clientId));
+    return send(res, 200, { reply: DOC_ACK });
   }
 
   if (isNonText) {
