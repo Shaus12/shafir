@@ -22,6 +22,10 @@ const VOICE_DOWNLOAD_ERROR = "לא הצלחנו להוריד את ההקלטה. 
 const VOICE_TRANSCRIBE_ERROR = "לא הצלחנו לתמלל את ההקלטה. נסו להקליט שוב.";
 const VOICE_PROCESS_ERROR = "לא הצלחנו לעבד את ההקלטה כרגע. נסו שוב.";
 
+const HELP_MESSAGE = `שלום! אפשר לשלוח לי:
+- תיאור עבודה בטקסט או בהקלטה (למשל: "צביעה 40 מ"ר, שני שקעים") ואחזיר סעיפים, קובץ אקסל וקובץ SKN.
+- צילום או PDF של חשבונית, קבלה או תעודת משלוח, ואחזיר את הפרטים שזיהיתי.`;
+
 const DOCUMENT_KINDS = new Set(["image", "photo", "document", "file", "pdf"]);
 const DOC_ACK = "קיבלתי את המסמך, קורא...";
 const DOC_DOWNLOAD_ERROR = "לא הצלחנו להוריד את המסמך. נסו לשלוח אותו שוב.";
@@ -505,7 +509,7 @@ async function processVoiceNote(mediaUrl, clientId) {
     if (!transcript) return sendToWorker(clientId, VOICE_TRANSCRIBE_ERROR);
 
     const { items } = await extractProposedItems(transcript);
-    await sendToWorker(clientId, `${transcriptLine(transcript)}\n\n${formatProposedItemsReply(items)}`);
+    await sendToWorker(clientId, `${transcriptLine(transcript)}\n\n${items.length ? formatProposedItemsReply(items) : HELP_MESSAGE}`);
     return sendQuoteFiles(clientId, items);
   } catch (error) {
     console.error("Voice note processing failed", error?.name || "Error");
@@ -652,7 +656,7 @@ export default async function handler(req, res) {
 
   try {
     const { items } = await extractProposedItems(messageText);
-    const reply = formatProposedItemsReply(items);
+    const reply = items.length ? formatProposedItemsReply(items) : HELP_MESSAGE;
     const clientId = payload.client?.id;
     if (items.length && clientId !== undefined && clientId !== null && clientId !== "" && process.env.AGENT4U_API_KEY) {
       waitUntil(sendQuoteFiles(clientId, items));
