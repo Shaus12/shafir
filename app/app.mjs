@@ -1,6 +1,6 @@
 import { sknToQuote, quoteToSkn, quoteTotals, parseAmount, SUBCHAPTERS, UNIT_OPTIONS, newId, itemLabel } from "../src/skn/model.mjs";
 import { listQuotes, getQuote, saveQuote, deleteQuote } from "./store.mjs";
-import { printQuote, shareFile } from "./pdf.mjs";
+import { printQuote, shareFile, requestPdf, PdfAuthError } from "./pdf.mjs";
 import { quoteToXlsx, XLSX_MIME } from "../src/xlsx.mjs";
 
 const app = document.getElementById("app");
@@ -490,7 +490,6 @@ function openExportSheet() {
   bg.innerHTML = `<div class="sheet" role="dialog" aria-label="ייצוא">
     <h3>ייצוא ושליחה</h3>
     ${t.unpriced ? `<p>${t.unpriced} סעיפים עדיין בלי מחיר. הם יופיעו ב-PDF עם 0.</p>` : ""}
-    <p>ה-PDF נפתח במסך ההדפסה של הטלפון. משם שומרים כ-PDF או משתפים לוואטסאפ.</p>
     <button class="btn wide" data-x="pdf">PDF עם מחירים</button>
     <button class="btn ghost wide" data-x="pdf-noprice">PDF בלי מחירים (כתב כמויות)</button>
     <button class="btn ghost wide" data-x="xlsx">Excel עם מחירים</button>
@@ -516,9 +515,7 @@ function openExportSheet() {
         const suffix = prices ? "" : " - כתב כמויות";
         await done(await shareFile(quoteToXlsx(quote, { prices }), `${fileBase()}${suffix}.xlsx`, XLSX_MIME));
       } else {
-        bg.remove();
-        await printQuote(quote, { prices: x === "pdf" });
-        return;
+        return exportPdf(bg, x === "pdf");
       }
       bg.remove();
     } catch (err) {
@@ -527,6 +524,68 @@ function openExportSheet() {
       bg.querySelectorAll("button").forEach(b => (b.disabled = false));
     }
   });
+}
+
+const readCode = () => { try { return localStorage.getItem(ACCESS_CODE_KEY) || ""; } catch { return ""; } };
+const writeCode = code => { try { code ? localStorage.setItem(ACCESS_CODE_KEY, code) : localStorage.removeItem(ACCESS_CODE_KEY); } catch {} };
+
+/** PDF from the server, shared from a fresh tap (Android drops the share sheet if the tap is too old). */
+function exportPdf(bg, prices) {
+  const sheet = bg.querySelector(".sheet");
+  const title = prices ? "PDF עם מחירים" : "PDF בלי מחירים";
+  let file = null;
+  const show = html => { sheet.innerHTML = `<h3>${title}</h3>${html}`; };
+
+  const askCode = message => {
+    show(`${message ? `<p class="sheet-err">${esc(message)}</p>` : "<p>קוד הגישה נשמר בטלפון אחרי הפעם הראשונה.</p>"}
+      <label>קוד גישה<input data-code type="password" autocomplete="current-password"></label>
+      <button class="btn wide" data-p="go">יצירת PDF</button>
+      <button class="btn ghost wide" data-p="print">פתיחה במסך ההדפסה במקום</button>
+      <button class="btn ghost wide" data-p="close">ביטול</button>`);
+    sheet.querySelector("[data-code]").focus();
+  };
+
+  const generate = async code => {
+    show(`<p aria-live="polite">מכין את ה-PDF… בפעם הראשונה אחרי הפסקה זה לוקח עד כ-10 שניות.</p>
+      <button class="btn wide" disabled>מכין…</button>`);
+    try {
+      await flush();
+      file = await requestPdf(quote, { prices, accessCode: code });
+      writeCode(code);
+      show(`<p>הקובץ מוכן. לחצו כדי לשלוח בוואטסאפ, במייל, או לשמור בטלפון.</p>
+        <button class="btn wide" data-p="share">שליחה או שמירה</button>
+        <button class="btn ghost wide" data-p="close">סגירה</button>`);
+      sheet.querySelector("[data-p=share]").focus();
+    } catch (err) {
+      if (err instanceof PdfAuthError) { writeCode(""); return askCode("קוד הגישה שגוי. נסו שוב."); }
+      show(`<p class="sheet-err">${esc(err.message)}</p>
+        <button class="btn wide" data-p="retry">ניסיון חוזר</button>
+        <button class="btn ghost wide" data-p="print">פתיחה במסך ההדפסה</button>
+        <button class="btn ghost wide" data-p="close">סגירה</button>`);
+    }
+  };
+
+  bg.addEventListener("click", async e => {
+    const p = e.target.closest("[data-p]")?.dataset.p;
+    if (!p) return;
+    if (p === "close") return bg.remove();
+    if (p === "go") {
+      const code = sheet.querySelector("[data-code]").value.trim();
+      return code ? generate(code) : askCode("יש להזין קוד גישה.");
+    }
+    if (p === "retry") return readCode() ? generate(readCode()) : askCode();
+    if (p === "print") { bg.remove(); return printQuote(quote, { prices }); }
+    if (p === "share" && file) {
+      const how = await shareFile(file, file.name, "application/pdf");
+      if (how !== "cancelled") { bg.remove(); done(how); }
+    }
+  });
+  bg.addEventListener("keydown", e => {
+    if (e.key === "Enter" && e.target.matches("[data-code]")) sheet.querySelector("[data-p=go]")?.click();
+  });
+
+  const code = readCode();
+  code ? generate(code) : askCode();
 }
 
 function done(how) {

@@ -1,10 +1,41 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "cleanUrls": false,
-  "functions": { "api/agent4u/webhook.mjs": { "maxDuration": 60 } },
-  "redirects": [{ "source": "/", "destination": "/app/", "permanent": false }],
+  "functions": {
+    "api/agent4u/webhook.mjs": {
+      "maxDuration": 60
+    },
+    "api/pdf.mjs": {
+      "maxDuration": 60,
+      "memory": 2048,
+      "includeFiles": "src/fonts/**"
+    }
+  },
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/app/",
+      "permanent": false
+    }
+  ],
   "headers": [
-    { "source": "/(.*)\\.mjs", "headers": [{ "key": "Content-Type", "value": "text/javascript; charset=utf-8" }] },
-    { "source": "/app/manifest.webmanifest", "headers": [{ "key": "Content-Type", "value": "application/manifest+json" }] }
+    {
+      "source": "/(.*)\\.mjs",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/javascript; charset=utf-8"
+        }
+      ]
+    },
+    {
+      "source": "/app/manifest.webmanifest",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/manifest+json"
+        }
+      ]
+    }
   ]
 }
