@@ -2,14 +2,67 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "cleanUrls": false,
   "functions": {
-    "api/agent4u/webhook.mjs": { "maxDuration": 60 },
-    "api/forms/submit.mjs": { "maxDuration": 30, "includeFiles": "{shafir-logo.png,assets/fonts/**}" }
+    "api/agent4u/webhook.mjs": {
+      "maxDuration": 60
+    },
+    "api/pdf.mjs": {
+      "maxDuration": 60,
+      "memory": 2048,
+      "includeFiles": "src/fonts/**"
+    },
+    "api/forms/submit.mjs": {
+      "maxDuration": 30,
+      "includeFiles": "{shafir-logo.png,assets/fonts/**}"
+    }
   },
-  "redirects": [{ "source": "/", "destination": "/app/", "permanent": false }],
-  "rewrites": [{ "source": "/forms/:id([a-z0-9-]+)", "destination": "/forms/index.html" }],
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/app/",
+      "permanent": false
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/forms/:id([a-z0-9-]+)",
+      "destination": "/forms/index.html"
+    }
+  ],
   "headers": [
-    { "source": "/(.*)\\.mjs", "headers": [{ "key": "Content-Type", "value": "text/javascript; charset=utf-8" }] },
-    { "source": "/app/manifest.webmanifest", "headers": [{ "key": "Content-Type", "value": "application/manifest+json" }] },
-    { "source": "/forms/(.*)", "headers": [{ "key": "Referrer-Policy", "value": "no-referrer" }, { "key": "Cache-Control", "value": "no-store" }, { "key": "X-Robots-Tag", "value": "noindex" }] }
+    {
+      "source": "/(.*)\\.mjs",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/javascript; charset=utf-8"
+        }
+      ]
+    },
+    {
+      "source": "/app/manifest.webmanifest",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/manifest+json"
+        }
+      ]
+    },
+    {
+      "source": "/forms/(.*)",
+      "headers": [
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex"
+        }
+      ]
+    }
   ]
 }
