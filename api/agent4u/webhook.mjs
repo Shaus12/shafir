@@ -12,6 +12,12 @@ import {
   MAX_DOCUMENT_BYTES,
 } from "../../src/document-extraction.mjs";
 import { matchDocuments, formatMatchReport } from "../../src/document-matching.mjs";
+import { CRM_MEDIA_URL, sendToWorker, sendFile } from "../../src/agent4u-crm.mjs";
+import { findFormByTrigger } from "../../src/forms/definitions.mjs";
+import { extractFormFields } from "../../src/forms/extract.mjs";
+import { sealFormToken, formsSecretConfigured } from "../../src/forms/token.mjs";
+
+export { mediaIdFrom, fileBase64, base64MatchesBytes } from "../../src/agent4u-crm.mjs";
 
 export const config = {
   api: {
@@ -21,8 +27,6 @@ export const config = {
 
 const TRANSCRIPTION_MODEL = "gpt-transcribe";
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024;
-const CRM_SEND_URL = "https://crm.agent4u.co.il/api/whatsapp/send";
-const CRM_MEDIA_URL = "https://crm.agent4u.co.il/api/whatsapp/media";
 const AUDIO_KINDS = new Set(["audio", "voice", "voice_note", "ptt"]);
 
 const VOICE_ACK = "קיבלתי את ההקלטה, מעבד...";
@@ -42,6 +46,7 @@ const DOC_UNSUPPORTED = "אפשר לשלוח תמונה (JPG, PNG, WEBP) או ק
 const DOC_PROCESS_ERROR = "לא הצלחנו לקרוא את המסמך כרגע. נסו שוב.";
 const DOC_NONE_FOUND = "לא זוהה מסמך ספק בקובץ. נסו לצלם שוב, ישר ובתאורה טובה.";
 const SINGLE_MESSAGE_LIMIT = 1500;
+const FORM_ERROR = "לא הצלחנו ליצור את הטופס כרגע. נסו שוב.";
 
 function send(res, status, body) {
   res.statusCode = status;
@@ -308,97 +313,6 @@ function audioFileInfo(contentType) {
   return { mime: "audio/ogg", ext: "ogg" };
 }
 
-function sendToWorker(clientId, body) {
-  return postToCrmSend({ client_id: clientId, body });
-}
-
-async function postToCrmSend(payload) {
-  const requestShape = {
-    fields: Object.keys(payload),
-    media_base64_length: typeof payload.media_base64 === "string" ? payload.media_base64.length : 0,
-  };
-  try {
-    const response = await fetch(CRM_SEND_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.AGENT4U_API_KEY}`,
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!response.ok) {
-      console.error("Agent4U send failed", response.status, JSON.stringify(requestShape));
-    }
-  } catch (error) {
-    console.error("Agent4U send failed", error?.name || "Error", JSON.stringify(requestShape));
-  }
-}
-
-function findMediaId(data) {
-  for (const [prefix, source] of [["", data], ["data.", data?.data]]) {
-    for (const key of ["media_id", "id"]) {
-      const value = source?.[key];
-      if ((typeof value === "string" && value.trim()) || typeof value === "number") return { value, field: prefix + key };
-    }
-  }
-  return null;
-}
-
-export function mediaIdFrom(data) {
-  return findMediaId(data)?.value ?? null;
-}
-
-const objectKeys = value => value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value) : [];
-
-async function uploadMedia(clientId, { media_base64, mime, filename }) {
-  let response;
-  try {
-    response = await fetch(CRM_MEDIA_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.AGENT4U_API_KEY}`,
-      },
-      body: JSON.stringify({ client_id: clientId, base64: media_base64, mime, filename }),
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch (error) {
-    console.error("Agent4U media upload failed", error?.name || "Error");
-    return null;
-  }
-  const text = await response.text().catch(() => "");
-  let data = null;
-  try {
-    data = JSON.parse(text);
-  } catch {}
-  const found = response.ok ? findMediaId(data) : null;
-  if (!found) {
-    console.error("Agent4U media upload failed", response.status, text.slice(0, 300), JSON.stringify(objectKeys(data)));
-    return null;
-  }
-  return found.value;
-}
-
-export function fileBase64(bytes) {
-  return Buffer.from(bytes).toString("base64");
-}
-
-export function base64MatchesBytes(base64, bytes) {
-  return Buffer.from(base64, "base64").equals(Buffer.from(bytes));
-}
-
-async function sendFile(clientId, caption, kind, bytes, { mime, filename }) {
-  const media_base64 = fileBase64(bytes);
-  if (!base64MatchesBytes(media_base64, bytes)) {
-    console.error("file encoding mismatch", kind);
-    return;
-  }
-  const mediaId = await uploadMedia(clientId, { media_base64, mime, filename });
-  if (mediaId === null) return;
-  await postToCrmSend({ client_id: clientId, document: { id: mediaId, filename, caption } });
-}
-
 export function proposedItemsToQuote(items) {
   const subchapters = [];
   for (const item of items) {
@@ -582,6 +496,22 @@ async function processDocument(mediaId, clientId) {
   }
 }
 
+function publicBaseUrl(req) {
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim();
+  return /^[a-z0-9.-]+(:\d+)?$/i.test(host) ? `https://${host}` : "";
+}
+
+export function formLinkReply(def, fields, url) {
+  const missing = def.fields.filter(field => field.required && !fields[field.key]).map(field => field.label);
+  return [
+    `נוצר טופס "${def.title}" לחתימה:`,
+    url,
+    "",
+    "שלחו את הקישור ללקוח. הקישור אישי ובתוקף ל-7 ימים. אחרי החתימה הטופס החתום יישלח לכאן כ-PDF.",
+    ...(missing.length ? [`פרטים שלא זוהו והלקוח ישלים בטופס: ${missing.join(", ")}.`] : []),
+  ].join("\n");
+}
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -670,6 +600,28 @@ export default async function handler(req, res) {
   if (!process.env.OPENAI_API_KEY) {
     console.error("OPENAI_API_KEY is not configured");
     return send(res, 500, { error: "השירות אינו מוגדר כרגע." });
+  }
+
+  const formDef = findFormByTrigger(messageText);
+  if (formDef) {
+    const clientId = payload.client?.id;
+    if (!formsSecretConfigured()) {
+      console.error("FORMS_SECRET is not configured");
+      return send(res, 500, { error: "השירות אינו מוגדר כרגע." });
+    }
+    if (clientId === undefined || clientId === null || clientId === "") {
+      return send(res, 200, { reply: FORM_ERROR });
+    }
+    try {
+      const baseUrl = publicBaseUrl(req);
+      if (!baseUrl) throw new Error("missing host");
+      const fields = await extractFormFields(formDef, messageText);
+      const token = sealFormToken({ formId: formDef.id, fields, clientId, workerPhone: normalizePhone(senderPhone) });
+      return send(res, 200, { reply: formLinkReply(formDef, fields, `${baseUrl}/forms/${formDef.id}?t=${token}`) });
+    } catch (error) {
+      console.error("Form link failed", error?.status || error?.name || "Error");
+      return send(res, 200, { reply: FORM_ERROR });
+    }
   }
 
   try {

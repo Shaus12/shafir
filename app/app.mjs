@@ -1,6 +1,6 @@
 import { sknToQuote, quoteToSkn, quoteTotals, parseAmount, SUBCHAPTERS, UNIT_OPTIONS, newId, itemLabel } from "../src/skn/model.mjs";
 import { listQuotes, getQuote, saveQuote, deleteQuote } from "./store.mjs";
-import { printQuote, shareFile } from "./pdf.mjs";
+import { printQuote, shareFile, quotePdfBlob, isMobileDevice, isInAppBrowser } from "./pdf.mjs";
 import { quoteToXlsx, XLSX_MIME } from "../src/xlsx.mjs";
 
 const app = document.getElementById("app");
@@ -483,14 +483,45 @@ function openFieldReview(result) {
 /* ---------- export ---------- */
 const fileBase = () => (quote.title || "הצעת מחיר").replace(/[\\/:*?"<>|]+/g, " ").trim().slice(0, 60);
 
+/** Browsers drop the share permission of a tap after about a second (Safari) to five (Chrome). */
+const SHARE_GESTURE_MS = 1000;
+
+async function buildExportFile(x) {
+  if (x === "skn") {
+    const type = "application/octet-stream";
+    return { blob: new Blob([quoteToSkn(quote)], { type }), name: `${quote.projectNo || fileBase()}.skn`, type };
+  }
+  const prices = x === "xlsx" || x === "pdf";
+  const suffix = prices ? "" : " - כתב כמויות";
+  if (x === "xlsx" || x === "xlsx-noprice") {
+    return { blob: quoteToXlsx(quote, { prices }), name: `${fileBase()}${suffix}.xlsx`, type: XLSX_MIME };
+  }
+  return { blob: await quotePdfBlob(quote, { prices }), name: `${fileBase()}${suffix}.pdf`, type: "application/pdf" };
+}
+
+function offerSave(bg, file) {
+  const sheet = bg.querySelector(".sheet");
+  sheet.innerHTML = `<h3>הקובץ מוכן</h3>
+    <p>${esc(file.name)}</p>
+    <button class="btn wide" data-save>שמירה / שיתוף</button>
+    <button class="btn ghost wide" data-x="close">סגירה</button>`;
+  sheet.querySelector("[data-save]").addEventListener("click", async event => {
+    event.stopPropagation();
+    const how = await shareFile(file.blob, file.name, file.type);
+    bg.remove();
+    done(how);
+  });
+}
+
 function openExportSheet() {
   const t = quoteTotals(quote);
+  const mobile = isMobileDevice();
   const bg = document.createElement("div");
   bg.className = "sheet-bg";
   bg.innerHTML = `<div class="sheet" role="dialog" aria-label="ייצוא">
     <h3>ייצוא ושליחה</h3>
     ${t.unpriced ? `<p>${t.unpriced} סעיפים עדיין בלי מחיר. הם יופיעו ב-PDF עם 0.</p>` : ""}
-    <p>ה-PDF נפתח במסך ההדפסה של הטלפון. משם שומרים כ-PDF או משתפים לוואטסאפ.</p>
+    <p>${mobile ? "הקובץ נשמר בטלפון או נשלח ישירות מתפריט השיתוף (וואטסאפ, מייל)." : "ה-PDF נפתח במסך ההדפסה של הטלפון. משם שומרים כ-PDF או משתפים לוואטסאפ."}</p>
     <button class="btn wide" data-x="pdf">PDF עם מחירים</button>
     <button class="btn ghost wide" data-x="pdf-noprice">PDF בלי מחירים (כתב כמויות)</button>
     <button class="btn ghost wide" data-x="xlsx">Excel עם מחירים</button>
@@ -502,25 +533,23 @@ function openExportSheet() {
     const x = e.target.closest("[data-x]")?.dataset.x;
     if (e.target === bg || x === "close") return bg.remove();
     if (!x) return;
+    const tapped = performance.now();
     await flush();
     const btn = e.target.closest("button");
     const label = btn.textContent;
     bg.querySelectorAll("button").forEach(b => (b.disabled = true));
     btn.textContent = "מכין…";
     try {
-      if (x === "skn") {
-        const bytes = quoteToSkn(quote);
-        await done(await shareFile(new Blob([bytes], { type: "application/octet-stream" }), `${quote.projectNo || fileBase()}.skn`, "application/octet-stream"));
-      } else if (x === "xlsx" || x === "xlsx-noprice") {
-        const prices = x === "xlsx";
-        const suffix = prices ? "" : " - כתב כמויות";
-        await done(await shareFile(quoteToXlsx(quote, { prices }), `${fileBase()}${suffix}.xlsx`, XLSX_MIME));
-      } else {
+      if (!mobile && (x === "pdf" || x === "pdf-noprice")) {
         bg.remove();
         await printQuote(quote, { prices: x === "pdf" });
         return;
       }
+      const file = await buildExportFile(x);
+      if (mobile && performance.now() - tapped > SHARE_GESTURE_MS) return offerSave(bg, file);
+      const how = await shareFile(file.blob, file.name, file.type);
       bg.remove();
+      done(how);
     } catch (err) {
       toast(err.message || "הייצוא נכשל", true);
       btn.textContent = label;
@@ -530,7 +559,7 @@ function openExportSheet() {
 }
 
 function done(how) {
-  if (how === "downloaded") toast("הקובץ ירד למכשיר");
+  if (how === "downloaded") toast(isInAppBrowser() ? "אם הקובץ לא ירד, פתחו את האפליקציה בדפדפן Chrome ונסו שוב." : "הקובץ ירד למכשיר");
   else if (how === "shared") toast("נשלח");
 }
 

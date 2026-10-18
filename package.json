@@ -9,6 +9,7 @@
     "skn": "node src/skn/cli.mjs"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^0.1.96",
     "@vercel/functions": "^1.5.0"
   }
 }
