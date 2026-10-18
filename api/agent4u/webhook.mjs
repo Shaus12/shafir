@@ -3,7 +3,15 @@ import { waitUntil } from "@vercel/functions";
 import { extractProposedItems, formatProposedItemsReply, SUBCHAPTER_MAP } from "../../src/proposed-items.mjs";
 import { quoteToSkn } from "../../src/skn/model.mjs";
 import { quoteToXlsx, XLSX_MIME } from "../../src/xlsx.mjs";
-import { extractDocument, formatDocumentReply, detectDocumentMime, MAX_DOCUMENT_BYTES } from "../../src/document-extraction.mjs";
+import {
+  extractDocuments,
+  formatDocumentReply,
+  formatDocumentListLine,
+  formatDocumentWarnings,
+  detectDocumentMime,
+  MAX_DOCUMENT_BYTES,
+} from "../../src/document-extraction.mjs";
+import { matchDocuments, formatMatchReport } from "../../src/document-matching.mjs";
 
 export const config = {
   api: {
@@ -32,6 +40,8 @@ const DOC_DOWNLOAD_ERROR = "לא הצלחנו להוריד את המסמך. נס
 const DOC_TOO_LARGE = "הקובץ גדול מדי. אפשר לשלוח קובץ עד 10MB.";
 const DOC_UNSUPPORTED = "אפשר לשלוח תמונה (JPG, PNG, WEBP) או קובץ PDF בלבד.";
 const DOC_PROCESS_ERROR = "לא הצלחנו לקרוא את המסמך כרגע. נסו שוב.";
+const DOC_NONE_FOUND = "לא זוהה מסמך ספק בקובץ. נסו לצלם שוב, ישר ובתאורה טובה.";
+const SINGLE_MESSAGE_LIMIT = 1500;
 
 function send(res, status, body) {
   res.statusCode = status;
@@ -556,8 +566,16 @@ async function processDocument(mediaId, clientId) {
     if (download.error) return sendToWorker(clientId, download.error);
     if (!detectDocumentMime(download.bytes)) return sendToWorker(clientId, DOC_UNSUPPORTED);
 
-    const doc = await extractDocument(download.bytes);
-    return sendToWorker(clientId, formatDocumentReply(doc));
+    const { documents } = await extractDocuments(download.bytes);
+    if (!documents.length) return sendToWorker(clientId, DOC_NONE_FOUND);
+    if (documents.length === 1) return sendToWorker(clientId, formatDocumentReply(documents[0]));
+
+    const list = [`זוהו ${documents.length} מסמכים בקובץ:`, ...documents.map(formatDocumentListLine)].join("\n");
+    const report = [formatMatchReport(matchDocuments(documents)), formatDocumentWarnings(documents)].filter(Boolean).join("\n\n");
+    const combined = `${list}\n\n${report}`;
+    if (combined.length <= SINGLE_MESSAGE_LIMIT) return sendToWorker(clientId, combined);
+    await sendToWorker(clientId, list);
+    return sendToWorker(clientId, report);
   } catch (error) {
     console.error("Document processing failed", error?.status || error?.name || "Error");
     return sendToWorker(clientId, DOC_PROCESS_ERROR);
