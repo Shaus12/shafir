@@ -167,12 +167,26 @@ export async function renderFormPdf({ def, values, files, signedAt, workerPhone,
     { str: hash, dir: "ltr", size: 10 },
   ];
   const recordH = record.length * recordLineH + 20;
-  y += 24;
-  if (!fits(recordH)) newPage();
-  const recordY = Math.max(y, bottom - recordH);
+  const recordGap = 12;
+  if (!fits(recordGap + recordH)) newPage();
+  const recordY = Math.max(y + (y === top ? 0 : recordGap), bottom - recordH);
   box(L, recordY, W, recordH);
   record.forEach(({ str, weight = 400, dir = "rtl", size = 11 }, i) =>
     text(str, R - 12, recordY + 10 + i * recordLineH, { size, weight, dir, color: COLORS.muted }));
+
+  if (pages.length > 1) {
+    const footerY = bottom + 18;
+    pages.forEach((pageOps, i) => pageOps.push(c => {
+      c.font = font(10);
+      c.fillStyle = COLORS.muted;
+      c.textBaseline = "top";
+      c.direction = "rtl";
+      c.textAlign = "right";
+      c.fillText(def.title, R, footerY);
+      c.textAlign = "left";
+      c.fillText(`עמוד ${i + 1} מתוך ${pages.length}`, L, footerY);
+    }));
+  }
 
   const jpegs = [];
   for (const pageOps of pages) {
