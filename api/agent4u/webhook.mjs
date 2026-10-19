@@ -13,7 +13,7 @@ import {
 } from "../../src/document-extraction.mjs";
 import { matchDocuments, formatMatchReport } from "../../src/document-matching.mjs";
 import { CRM_MEDIA_URL, sendToWorker, sendFile } from "../../src/agent4u-crm.mjs";
-import { findFormByTrigger, FORM_DEFINITIONS } from "../../src/forms/definitions.mjs";
+import { findFormByTrigger, FORM_DEFINITIONS, visibleFields, isFileField } from "../../src/forms/definitions.mjs";
 import { extractFormFields } from "../../src/forms/extract.mjs";
 import { sealFormToken, formsSecretConfigured } from "../../src/forms/token.mjs";
 
@@ -504,14 +504,17 @@ function publicBaseUrl(req) {
   return /^[a-z0-9.-]+(:\d+)?$/i.test(host) ? `https://${host}` : "";
 }
 
-export function formLinkReply(def, fields, url) {
-  const missing = def.fields.filter(field => field.required && !fields[field.key]).map(field => field.label);
+export function formLinkReply(def, fields, url, { invalid = [] } = {}) {
+  const missing = visibleFields(def, fields)
+    .filter(field => field.required && !isFileField(field) && !fields[field.key] && !invalid.includes(field.key))
+    .map(field => field.label);
   return [
     `נוצר טופס "${def.title}" לחתימה:`,
     url,
     "",
     "שלחו את הקישור ללקוח. הקישור אישי ובתוקף ל-7 ימים. אחרי החתימה הטופס החתום יישלח לכאן כ-PDF.",
     ...(missing.length ? [`פרטים שלא זוהו והלקוח ישלים בטופס: ${missing.join(", ")}.`] : []),
+    ...(invalid.length ? ["מספר הזהות שנשלח לא תקין, הלקוח ישלים אותו בטופס."] : []),
   ].join("\n");
 }
 
@@ -618,9 +621,9 @@ export default async function handler(req, res) {
     try {
       const baseUrl = publicBaseUrl(req);
       if (!baseUrl) throw new Error("missing host");
-      const fields = await extractFormFields(formDef, messageText);
+      const { fields, invalid } = await extractFormFields(formDef, messageText);
       const token = sealFormToken({ formId: formDef.id, fields, clientId, workerPhone: normalizePhone(senderPhone) });
-      return send(res, 200, { reply: formLinkReply(formDef, fields, `${baseUrl}/forms/${formDef.id}?t=${token}`) });
+      return send(res, 200, { reply: formLinkReply(formDef, fields, `${baseUrl}/forms/${formDef.id}?t=${token}`, { invalid }) });
     } catch (error) {
       console.error("Form link failed", error?.status || error?.name || "Error");
       return send(res, 200, { reply: FORM_ERROR });

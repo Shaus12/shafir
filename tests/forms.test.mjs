@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sealFormToken, openFormToken, FORM_TOKEN_TTL_MS } from "../src/forms/token.mjs";
-import { isValidIsraeliId, cleanIsraeliId, cleanFormFields, validateFormFields } from "../src/forms/validate.mjs";
-import { getFormDefinition, findFormByTrigger, renderFormBody } from "../src/forms/definitions.mjs";
+import { isValidIsraeliId, cleanIsraeliId, cleanFormFields, validateFormFields, israeliIdsInText } from "../src/forms/validate.mjs";
+import { extractFormFields } from "../src/forms/extract.mjs";
+import { getFormDefinition, findFormByTrigger, renderFormBody, onlyVisibleValues, formSummary } from "../src/forms/definitions.mjs";
 import { formLinkReply } from "../api/agent4u/webhook.mjs";
 
 const secret = "test-forms-secret-that-is-at-least-32-chars";
@@ -87,8 +88,182 @@ test("waiver trigger and legal text are exact", () => {
   assert.equal(lines.at(-1).signature, true);
 });
 
+function fakeModel(fieldsFromModel) {
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(fieldsFromModel) } }] }), { status: 200 });
+  };
+  return { fetch, calls };
+}
+
+const modelFields = { full_name: "משה כהן", id_number: "123456789", damage_description: "נזקי מים במטבח", insurance_company: "הראל" };
+
+test("ID number is read from the message text, never from the model", async () => {
+  const messages = [
+    "כתב ויתור עבור משה כהן מספר הזהות שלו 123456782 נזקי מים במטבח בהראל",
+    'כתב ויתור, משה כהן, ת"ז 123456782, הראל, נזקי מים במטבח',
+    'כתב ויתור, משה כהן, ת"ז: 123-45678-2, הראל, נזקי מים במטבח',
+    'כתב ויתור, משה כהן, ת"ז \u200F123456782\u200F, הראל, נזקי מים במטבח',
+    "כתב ויתור משה כהן 0501234567 123456782 צביעה 40 מ\"ר הראל",
+  ];
+  for (const message of messages) {
+    const { fetch, calls } = fakeModel(modelFields);
+    const { fields: result, invalid } = await extractFormFields(waiver, message, { apiKey: "test", fetch });
+    assert.equal(result.id_number, "123456782", message);
+    assert.deepEqual(invalid, []);
+    assert.deepEqual(validateFormFields(waiver, result), {});
+    const schema = calls[0].response_format.json_schema.schema;
+    assert.equal("id_number" in schema.properties, false);
+    assert.equal(schema.required.includes("id_number"), false);
+  }
+});
+
+test("an invalid ID in the message leaves the field empty and is reported", async () => {
+  const { fetch } = fakeModel(modelFields);
+  const { fields: result, invalid } = await extractFormFields(waiver, 'כתב ויתור, משה כהן, ת"ז 123456789, הראל, נזקי מים', { apiKey: "test", fetch });
+  assert.equal(result.id_number, "");
+  assert.deepEqual(invalid, ["id_number"]);
+  const reply = formLinkReply(waiver, result, "https://example.com/forms/waiver?t=abc", { invalid });
+  assert.ok(reply.includes("מספר הזהות שנשלח לא תקין, הלקוח ישלים אותו בטופס."));
+  assert.equal(reply.includes("פרטים שלא זוהו"), false);
+});
+
+test("no ID in the message is a missing field, not an invalid one", async () => {
+  const { fetch } = fakeModel(modelFields);
+  const { fields: result, invalid } = await extractFormFields(waiver, "כתב ויתור, משה כהן, הראל, נזקי מים 40 מ\"ר", { apiKey: "test", fetch });
+  assert.equal(result.id_number, "");
+  assert.deepEqual(invalid, []);
+  assert.deepEqual(israeliIdsInText("צביעה 18 מ\"ר"), { valid: [], invalid: 0 });
+});
+
 test("bot reply lists the link and missing fields", () => {
   const reply = formLinkReply(waiver, { ...fields, id_number: "" }, "https://example.com/forms/waiver?t=abc");
   assert.ok(reply.includes("https://example.com/forms/waiver?t=abc"));
   assert.ok(reply.includes("פרטים שלא זוהו והלקוח ישלים בטופס: מספר זהות."));
+});
+
+const workOrder = getFormDefinition("work-order");
+const privateOrder = {
+  work_description: "נזקי מים במטבח", insurance_company: "הראל", customer_type: "private",
+  private_name: "משה כהן", private_id: "123456782", private_address: "הרצל 1, אשקלון", private_phone: "0501234567",
+  private_fax: "", private_email: "moshe@example.com",
+};
+const corporateOrder = {
+  work_description: "נזקי מים במשרד", insurance_company: "מגדל", customer_type: "corporate",
+  company_name: 'אבג בע"מ', company_number: "515555555", guarantor_name: "דנה לוי", guarantor_id: "123456782",
+  company_address: "העצמאות 5, באר שבע", company_phone: "086234567", witness_name: "יוסי מזרחי",
+};
+
+test("work order trigger and legal text with private customer details", () => {
+  assert.equal(findFormByTrigger("הזמנת עבודה, פרטי, משה כהן")?.id, "work-order");
+  assert.equal(findFormByTrigger("כתב ויתור, משה כהן")?.id, "waiver");
+  const lines = renderFormBody(workOrder, privateOrder);
+  assert.deepEqual(lines.map(line => line.text), [
+    "הננו מזמינים בזאת ביצוע עבודות שיקום בעקבות נזק נזקי מים במטבח",
+    "התשלום יתבצע לפי אישור השמאי וישירות אליכם תוך 30 יום מביצוע העבודה והגשת חשבונכם. למען הסר ספק, ולמרות כל מסמך שנחתם בינינו ולבין חברת הביטוח הראל",
+    'הננו ממחים לכם בזאת באופן בלתי חוזר כל סכום שיגיע לנו מחברת הביטוח והננו מורים בזאת לחברת הביטוח לשלם לכם ישירות את תמורת העבודה, וזאת מהכספים המגיעים ו/או שיגיעו לנו, אם יגיעו מחברת הביטוח. מוסכם בזאת, כי לחברת שפיר שיקום נזקים בע"מ תינתן זכות בחירה לגבות הכספים מהחתום מטה או ישירות מחברת הביטוח',
+    "פרטי הלקוח",
+    "סוג לקוח: לקוח פרטי",
+    "שם: משה כהן",
+    "תעודת זהות: 123456782",
+    "כתובת: הרצל 1, אשקלון",
+    "טלפון: 0501234567",
+    "כתובת אימייל לשליחת העתק הזמנה: moshe@example.com",
+    "חתימת הלקוח",
+    "הערות:",
+    "1. בכל מחלוקת לגבי טיב העבודה ישמש השמאי מטעם חברת הביטוח, בורר מכריע ויש לראות במסמך זה הסכם בוררות.",
+    '2. סמכות שיפוט בלעדית בכל תובענה בנוגע להזמנה, תהיה באשקלון ו/או בבית המשפט המחוזי ב"ש.',
+  ]);
+  assert.deepEqual(lines.filter(line => line.image).map(line => [line.image, line.signature]), [["private_signature", true]]);
+  assert.ok(lines.find(line => line.text === "פרטי הלקוח").heading);
+});
+
+test("work order corporate details, stamp image and witness section", () => {
+  const lines = renderFormBody(workOrder, corporateOrder);
+  const details = lines.slice(lines.findIndex(line => line.text === "פרטי הלקוח"), lines.findIndex(line => line.text === "הערות:"));
+  assert.deepEqual(details.map(line => line.text), [
+    "פרטי הלקוח",
+    "סוג לקוח: לקוח שהוא תאגיד",
+    'שם התאגיד: אבג בע"מ',
+    "ח.פ: 515555555",
+    "תמונת חתימה וחותמת התאגיד",
+    "שם הערב האישי לתשלום: דנה לוי",
+    "תעודת זהות של הערב האישי לתשלום: 123456782",
+    "חתימת הערב האישי לתשלום",
+    "כתובת: העצמאות 5, באר שבע",
+    "טלפון: 086234567",
+    "נחתם בנוכחות",
+    "שם מלא: יוסי מזרחי",
+    "חתימה",
+  ]);
+  assert.deepEqual(details.filter(line => line.image).map(line => [line.image, line.signature]), [
+    ["company_stamp", false], ["guarantor_signature", true], ["witness_signature", true],
+  ]);
+});
+
+test("work order validation follows the chosen customer type", () => {
+  assert.deepEqual(validateFormFields(workOrder, cleanFormFields(workOrder, privateOrder)), {});
+  assert.deepEqual(validateFormFields(workOrder, cleanFormFields(workOrder, corporateOrder)), {});
+  assert.deepEqual(validateFormFields(workOrder, cleanFormFields(workOrder, { work_description: "x", insurance_company: "y" })), {
+    customer_type: "יש לבחור אפשרות",
+  });
+  const bad = cleanFormFields(workOrder, { ...privateOrder, private_phone: "12345", private_fax: "abc", private_email: "moshe@", customer_type: "other" });
+  assert.equal(bad.customer_type, "");
+  assert.equal(bad.private_fax, "");
+  const badPrivate = cleanFormFields(workOrder, { ...privateOrder, private_phone: "12345", private_email: "moshe@" });
+  assert.deepEqual(validateFormFields(workOrder, badPrivate), { private_phone: "מספר לא תקין", private_email: "כתובת אימייל לא תקינה" });
+  const badCorporate = cleanFormFields(workOrder, { ...corporateOrder, company_number: "51-555555", guarantor_id: "123456789" });
+  assert.deepEqual(validateFormFields(workOrder, badCorporate), {
+    company_number: "ח.פ צריך להכיל 9 ספרות",
+    guarantor_id: "מספר זהות לא תקין",
+  });
+  assert.equal(cleanFormFields(workOrder, { private_phone: "050-123 4567", company_number: "51-555555-5", private_email: " Moshe@Example.com\u200F" }).private_phone, "0501234567");
+  assert.equal(cleanFormFields(workOrder, { company_number: "51-555555-5" }).company_number, "515555555");
+  assert.equal(cleanFormFields(workOrder, { private_email: " moshe@example.com\u200F" }).private_email, "moshe@example.com");
+});
+
+test("hidden fields are emptied before printing, and the caption uses the visible name", () => {
+  const mixed = { ...privateOrder, company_name: 'אבג בע"מ' };
+  assert.equal(onlyVisibleValues(workOrder, mixed).company_name, "");
+  assert.equal(formSummary(workOrder, onlyVisibleValues(workOrder, mixed)), "משה כהן");
+  assert.equal(formSummary(workOrder, corporateOrder), 'אבג בע"מ');
+  assert.equal(formSummary(waiver, fields), "משה כהן");
+});
+
+test("work order ID goes to the single visible ID field, company number excluded", async () => {
+  const corporateModel = { ...corporateOrder, guarantor_id: "999999998" };
+  for (const message of [
+    'הזמנת עבודה, תאגיד, אבג בע"מ, ח.פ 515555555, ערב דנה לוי ת"ז 123456782, מגדל',
+    'הזמנת עבודה, תאגיד, אבג בע"מ 515555555, ערב דנה לוי 123-45678-2, מגדל',
+  ]) {
+    const { fetch, calls } = fakeModel(corporateModel);
+    const { fields: result, invalid } = await extractFormFields(workOrder, message, { apiKey: "test", fetch });
+    assert.equal(result.guarantor_id, "123456782", message);
+    assert.equal(result.private_id, "");
+    assert.deepEqual(invalid, []);
+    const schema = calls[0].response_format.json_schema.schema;
+    assert.deepEqual(schema.properties.customer_type.enum, ["", "private", "corporate"]);
+    for (const key of ["private_id", "guarantor_id", "private_signature", "company_stamp", "guarantor_signature", "witness_signature"]) {
+      assert.equal(key in schema.properties, false, key);
+    }
+  }
+
+  const twoIds = fakeModel(privateOrder);
+  const both = await extractFormFields(workOrder, 'הזמנת עבודה, פרטי, משה כהן ת"ז 123456782 ואשתו 000000018', { apiKey: "test", fetch: twoIds.fetch });
+  assert.equal(both.fields.private_id, "");
+  assert.deepEqual(both.invalid, []);
+
+  const noType = fakeModel({ ...privateOrder, customer_type: "" });
+  const unknown = await extractFormFields(workOrder, 'הזמנת עבודה, משה כהן ת"ז 123456782', { apiKey: "test", fetch: noType.fetch });
+  assert.equal(unknown.fields.private_id, "");
+  assert.equal(unknown.fields.guarantor_id, "");
+});
+
+test("work order bot reply lists only missing fields of the chosen customer type", () => {
+  const reply = formLinkReply(workOrder, cleanFormFields(workOrder, { ...privateOrder, private_email: "" }), "https://example.com/forms/work-order?t=abc");
+  assert.ok(reply.startsWith('נוצר טופס "הזמנת עבודה והמחאת זכויות" לחתימה:\nhttps://example.com/forms/work-order?t=abc\n'));
+  assert.ok(reply.includes("פרטים שלא זוהו והלקוח ישלים בטופס: כתובת אימייל לשליחת העתק הזמנה."));
+  const noType = formLinkReply(workOrder, cleanFormFields(workOrder, { work_description: "x", insurance_company: "y" }), "https://example.com/x");
+  assert.ok(noType.includes("פרטים שלא זוהו והלקוח ישלים בטופס: סוג לקוח."));
 });

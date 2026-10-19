@@ -17,6 +17,7 @@
   --brand:#0b5aa6;--brand-ink:#fff;--danger:#b42318;--ok:#1f7a3f;
 }
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0}
 body{font-family:var(--f-body);color:var(--ink);background:var(--bg);line-height:1.5;-webkit-text-size-adjust:100%}
 main{max-width:640px;margin:0 auto;padding:16px 16px calc(32px + env(safe-area-inset-bottom))}
@@ -30,7 +31,16 @@ label .req{color:var(--danger)}
 input,textarea{width:100%;font:inherit;font-size:16px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink)}
 textarea{min-height:88px;resize:vertical}
 input:focus,textarea:focus{outline:2px solid var(--brand);outline-offset:1px;border-color:var(--brand)}
-.invalid input,.invalid textarea,.invalid .pad{border-color:var(--danger)}
+.invalid input,.invalid textarea,.invalid .pad,.invalid .option{border-color:var(--danger)}
+.field-label{font-weight:600;font-size:.95rem;margin:12px 0 4px}
+.field-label .req{color:var(--danger)}
+.ltr{direction:ltr;text-align:right}
+.choice{display:grid;gap:8px}
+.option{display:flex;align-items:center;gap:10px;margin:0;font-weight:400;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fff;cursor:pointer}
+.option input{width:auto;margin:0;accent-color:var(--brand)}
+input[type=file]{padding:10px}
+.preview{display:block;max-width:100%;max-height:200px;margin-top:8px;border:1px solid var(--line);border-radius:10px}
+.legal p.heading{font-weight:700;margin-top:14px}
 .err{color:var(--danger);font-size:.85rem;min-height:1.1em;margin-top:4px}
 .legal p{margin:0 0 8px;white-space:pre-wrap}
 .legal .blank{color:var(--muted)}

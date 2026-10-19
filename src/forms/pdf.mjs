@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createCanvas, GlobalFonts, loadImage } from "@napi-rs/canvas";
 import { jpegPagesToPdf, wrapText } from "../pdf-writer.mjs";
-import { renderFormBody } from "./definitions.mjs";
+import { renderFormBody, isFileField } from "./definitions.mjs";
 
 const PAGE_W = 794;
 const PAGE_H = 1123;
@@ -40,19 +40,30 @@ export function israelDateTime(date) {
 }
 
 /**
- * SHA-256 of the signed content: form id and title, field values, the legal text as filled in,
- * the signature image, the signing time and the worker phone that created the link.
+ * SHA-256 of the signed content: form id and title, every text field value (choices included), the legal
+ * text and details as printed, a SHA-256 of every signature and image, the signing time and the worker
+ * phone that created the link.
  */
-export function formContentHash({ def, values, signaturePng, signedAt, workerPhone }) {
+export function formContentHash({ def, values, files, signedAt, workerPhone }) {
   return sha256(JSON.stringify({
     form: def.id,
     title: def.title,
-    fields: def.fields.map(field => [field.key, values[field.key] ?? ""]),
+    fields: def.fields.filter(field => !isFileField(field)).map(field => [field.key, values[field.key] ?? ""]),
     text: renderFormBody(def, values).map(line => line.text),
-    signature_sha256: sha256(signaturePng),
+    files: def.fields.filter(field => isFileField(field) && files[field.key]).map(field => [field.key, sha256(files[field.key])]),
     signed_at: signedAt.toISOString(),
     created_by: workerPhone || "",
   }));
+}
+
+/** True when the bytes decode as an image. */
+export async function imageDecodes(bytes) {
+  try {
+    const image = await loadImage(bytes);
+    return Boolean(image.width && image.height);
+  } catch {
+    return false;
+  }
 }
 
 /** True when the signature PNG has enough dark, visible pixels to be a real signature. */
@@ -77,10 +88,11 @@ export async function signatureHasInk(pngBytes) {
   return ink >= 40;
 }
 
-/** Render the signed form. Returns the PDF bytes. */
-export async function renderFormPdf({ def, values, signaturePng, signedAt, workerPhone, hash }) {
+/** Render the signed form; `files` holds the signature and image bytes by field key. Returns the PDF bytes. */
+export async function renderFormPdf({ def, values, files, signedAt, workerPhone, hash }) {
   const { logo } = await loadAssets();
-  const signature = await loadImage(signaturePng);
+  const images = {};
+  for (const [key, bytes] of Object.entries(files)) images[key] = await loadImage(bytes);
   const canvas = createCanvas(PAGE_W * SCALE, PAGE_H * SCALE);
   const ctx = canvas.getContext("2d");
 
@@ -107,24 +119,33 @@ export async function renderFormPdf({ def, values, signaturePng, signedAt, worke
     y += 24;
   }
   y += 14;
-  text(def.title, PAGE_W / 2, y, { size: 22, weight: 700, align: "center" });
+  text(def.heading || def.title, PAGE_W / 2, y, { size: 22, weight: 700, align: "center" });
   y += 22 * 1.5 + 18;
 
   const bodySize = 15;
   const lineH = bodySize * 1.75;
   for (const line of renderFormBody(def, values)) {
-    if (line.signature) {
-      const boxW = 280, boxH = 120;
+    if (line.heading) {
+      if (!fits(lineH * 2 + 10)) newPage();
+      y += 10;
+      text(line.text, R, y, { size: 16, weight: 700 });
+      y += lineH;
+      continue;
+    }
+    if (line.image) {
+      const img = images[line.image];
+      if (!img) continue;
+      const boxW = line.signature ? 280 : 300, boxH = line.signature ? 120 : 160;
       if (!fits(boxH + 16)) newPage();
       y += 8;
       ctx.font = font(bodySize);
-      const labelW = ctx.measureText(line.text).width;
-      const sigRight = R - labelW - 16;
-      const scale = Math.min(boxW / signature.width, boxH / signature.height);
-      const sigW = signature.width * scale, sigH = signature.height * scale;
-      image(signature, sigRight - sigW, y + boxH - sigH, sigW, sigH);
+      const labelW = Math.min(ctx.measureText(line.text).width, W - boxW - 16);
+      const imgRight = R - labelW - 16;
+      const scale = Math.min(boxW / img.width, boxH / img.height);
+      const imgW = img.width * scale, imgH = img.height * scale;
+      image(img, imgRight - imgW, y + boxH - imgH, imgW, imgH);
       text(line.text, R, y + boxH - lineH, { size: bodySize });
-      rule(sigRight - boxW, sigRight, y + boxH + 2, COLORS.muted);
+      if (line.signature) rule(imgRight - boxW, imgRight, y + boxH + 2, COLORS.muted);
       y += boxH + 14;
       continue;
     }
@@ -153,14 +174,14 @@ export async function renderFormPdf({ def, values, signaturePng, signedAt, worke
   record.forEach(({ str, weight = 400, dir = "rtl", size = 11 }, i) =>
     text(str, R - 12, recordY + 10 + i * recordLineH, { size, weight, dir, color: COLORS.muted }));
 
-  const images = [];
+  const jpegs = [];
   for (const pageOps of pages) {
     ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
     ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, PAGE_W, PAGE_H);
     for (const op of pageOps) op(ctx);
-    images.push(new Uint8Array(await canvas.encode("jpeg", 90)));
+    jpegs.push(new Uint8Array(await canvas.encode("jpeg", 90)));
   }
-  const blob = jpegPagesToPdf(images, canvas.width, canvas.height);
+  const blob = jpegPagesToPdf(jpegs, canvas.width, canvas.height);
   return new Uint8Array(await blob.arrayBuffer());
 }

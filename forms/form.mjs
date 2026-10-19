@@ -1,4 +1,4 @@
-import { getFormDefinition, renderFormBody } from "../src/forms/definitions.mjs";
+import { getFormDefinition, renderFormBody, isFileField, isFieldVisible, DEFAULT_SECTION } from "../src/forms/definitions.mjs";
 import { cleanFormFields, validateFormFields } from "../src/forms/validate.mjs";
 import { shareFile } from "../app/pdf.mjs";
 
@@ -6,6 +6,9 @@ const content = document.getElementById("content");
 const formId = location.pathname.split("/").filter(Boolean)[1] || "";
 const token = new URLSearchParams(location.search).get("t") || "";
 const def = getFormDefinition(formId);
+
+const MAX_IMAGE_BYTES = 600 * 1024;
+const BLANK = "________";
 
 let toastTimer;
 function toast(text, err = false) {
@@ -100,87 +103,205 @@ function signaturePad(canvas, onChange) {
   };
 }
 
-function renderForm(values) {
-  const inputs = {};
-  const errorEls = {};
-  const wrappers = {};
+const blobToDataUrl = blob => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = () => reject(new Error("לא ניתן לקרוא את התמונה."));
+  reader.readAsDataURL(blob);
+});
 
+/** A chosen photo as a JPEG data URL of at most 600 KB: scaled down and recompressed until it fits. */
+async function compressImage(file) {
+  if (file.type && !/^image\/(jpeg|png)$/.test(file.type)) throw new Error("יש לבחור תמונה בפורמט JPG או PNG.");
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode().catch(() => { throw new Error("לא ניתן לקרוא את התמונה. בחרו קובץ JPG או PNG."); });
+    let maxSide = 1600, quality = 0.85;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", quality));
+      canvas.width = canvas.height = 0;
+      if (blob && blob.size <= MAX_IMAGE_BYTES) return await blobToDataUrl(blob);
+      if (quality > 0.55) quality -= 0.1;
+      else maxSide = Math.round(maxSide * 0.75);
+    }
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  throw new Error("התמונה גדולה מדי. נסו תמונה אחרת.");
+}
+
+function fieldLabel(field, htmlFor) {
+  const required = field.required ? el("span", { className: "req", textContent: " *" }) : null;
+  return htmlFor ? el("label", { htmlFor }, field.label, required) : el("div", { className: "field-label" }, field.label, required);
+}
+
+function textInput(field, id) {
+  if (field.type === "textarea") return el("textarea", { id, name: field.key, maxLength: field.maxLength || 200 });
+  const input = el("input", { id, name: field.key, type: "text", maxLength: field.maxLength || 200, autocomplete: "off" });
+  if (field.type === "israeli_id" || field.type === "company_number") Object.assign(input, { inputMode: "numeric", maxLength: 20 });
+  if (field.type === "phone") Object.assign(input, { type: "tel", inputMode: "tel", maxLength: 30, className: "ltr" });
+  if (field.type === "email") Object.assign(input, { type: "email", inputMode: "email", autocapitalize: "off", spellcheck: false, className: "ltr" });
+  return input;
+}
+
+function renderForm(prefill) {
+  const controls = {};
+  const images = {};
+  const pads = {};
+  const sectionCards = new Map();
+  const signatureCards = [];
   const legal = el("div", { className: "legal" });
-  const renderLegal = () => {
-    const current = cleanFormFields(def, Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value])));
-    const filled = Object.fromEntries(def.fields.map(field => [field.key, current[field.key] || "________"]));
-    legal.replaceChildren(...renderFormBody(def, filled).map(line =>
-      el("p", { textContent: line.signature ? `${line.text}: בתיבת החתימה למטה` : line.text })));
+
+  const readValues = () => cleanFormFields(def, Object.fromEntries(def.fields
+    .filter(field => !isFileField(field))
+    .map(field => [field.key, controls[field.key].read()])));
+
+  const renderLegal = values => {
+    const filled = Object.fromEntries(def.fields.map(field => [field.key, field.type === "choice" ? values[field.key] : values[field.key] || BLANK]));
+    legal.replaceChildren(...renderFormBody(def, filled).map(line => el("p", {
+      className: line.heading ? "heading" : "",
+      textContent: line.image ? `${line.text}: ${line.signature ? "בתיבת החתימה למטה" : "בתמונה שהועלתה"}` : line.text,
+    })));
   };
 
-  const fieldsCard = el("section", { className: "card" }, el("h2", { textContent: "פרטי הלקוח" }));
+  const updateVisibility = values => {
+    for (const field of def.fields) controls[field.key].box.hidden = !isFieldVisible(field, values);
+    for (const [name, card] of sectionCards) {
+      card.hidden = !def.fields.some(field => !controls[field.key].box.hidden && field.type !== "signature" && (field.section || DEFAULT_SECTION) === name);
+    }
+  };
+
+  const setError = (key, message) => {
+    controls[key].error.textContent = message;
+    controls[key].wrapper.classList.toggle("invalid", Boolean(message));
+  };
+
+  const refresh = () => {
+    const values = readValues();
+    updateVisibility(values);
+    renderLegal(values);
+  };
+
   for (const field of def.fields) {
     const id = `f-${field.key}`;
-    const input = field.type === "textarea"
-      ? el("textarea", { id, name: field.key, maxLength: field.maxLength || 200 })
-      : el("input", { id, name: field.key, type: "text", maxLength: field.maxLength || 200, autocomplete: "off" });
-    if (field.type === "israeli_id") Object.assign(input, { type: "text", inputMode: "numeric", maxLength: 20 });
-    input.value = values[field.key] || "";
-    input.addEventListener("input", () => {
-      wrappers[field.key].classList.remove("invalid");
-      errorEls[field.key].textContent = "";
-      renderLegal();
-    });
-    const label = el("label", { htmlFor: id }, field.label, field.required ? el("span", { className: "req", textContent: " *" }) : null);
-    errorEls[field.key] = el("div", { className: "err" });
-    wrappers[field.key] = el("div", {}, label, input, errorEls[field.key]);
-    inputs[field.key] = input;
-    fieldsCard.append(wrappers[field.key]);
+    const error = el("div", { className: "err" });
+
+    if (field.type === "signature") {
+      const title = field.pageLabel || field.label;
+      const canvas = el("canvas", { className: "pad", ariaLabel: title });
+      const hint = el("div", { className: "pad-hint", textContent: "חתמו כאן באצבע" });
+      const wrapper = el("div", {}, el("div", { className: "pad-wrap" }, canvas, hint), error);
+      const clear = el("button", { type: "button", className: "link", textContent: "ניקוי חתימה" });
+      const card = el("section", { className: "card" }, el("div", { className: "row" }, el("h2", { textContent: title }), clear), wrapper);
+      signatureCards.push(card);
+      controls[field.key] = { box: card, wrapper, error, focus: canvas, canvas, hint, clear };
+      continue;
+    }
+
+    let control, read = () => "", focus;
+    if (field.type === "choice") {
+      control = el("div", { className: "choice", role: "radiogroup", ariaLabel: field.label });
+      for (const option of field.options) {
+        const radio = el("input", { type: "radio", name: field.key, value: option.value, checked: prefill[field.key] === option.value });
+        radio.addEventListener("change", () => { setError(field.key, ""); refresh(); });
+        control.append(el("label", { className: "option" }, radio, el("span", { textContent: option.label })));
+      }
+      read = () => control.querySelector("input:checked")?.value || "";
+      focus = control;
+    } else if (field.type === "image") {
+      const fileInput = el("input", { id, type: "file", accept: "image/jpeg,image/png" });
+      const preview = el("img", { className: "preview", alt: field.label, hidden: true });
+      fileInput.addEventListener("change", async () => {
+        const file = fileInput.files?.[0];
+        delete images[field.key];
+        preview.hidden = true;
+        if (!file) return;
+        setError(field.key, "");
+        try {
+          images[field.key] = await compressImage(file);
+          preview.src = images[field.key];
+          preview.hidden = false;
+        } catch (err) {
+          fileInput.value = "";
+          setError(field.key, err.message);
+        }
+      });
+      control = el("div", {}, fileInput, preview);
+      focus = fileInput;
+    } else {
+      const input = textInput(field, id);
+      input.value = prefill[field.key] || "";
+      input.addEventListener("input", () => { setError(field.key, ""); refresh(); });
+      control = input;
+      read = () => input.value;
+      focus = input;
+    }
+
+    const wrapper = el("div", {}, fieldLabel(field, field.type === "choice" ? null : id), control, error);
+    const section = field.section || DEFAULT_SECTION;
+    if (!sectionCards.has(section)) sectionCards.set(section, el("section", { className: "card" }, el("h2", { textContent: section })));
+    sectionCards.get(section).append(wrapper);
+    controls[field.key] = { box: wrapper, wrapper, error, focus, read };
   }
 
   const legalCard = el("section", { className: "card" }, el("h2", { textContent: "נוסח הטופס" }), legal);
-
-  const canvas = el("canvas", { className: "pad", ariaLabel: "תיבת חתימה" });
-  const hint = el("div", { className: "pad-hint", textContent: "חתמו כאן באצבע" });
-  const signatureError = el("div", { className: "err" });
-  const signatureWrap = el("div", {}, el("div", { className: "pad-wrap" }, canvas, hint), signatureError);
-  const clearButton = el("button", { type: "button", className: "link", textContent: "ניקוי חתימה" });
-  const signatureCard = el("section", { className: "card" },
-    el("div", { className: "row" }, el("h2", { textContent: "חתימת הלקוח" }), clearButton), signatureWrap);
-
   const submit = el("button", { type: "submit", className: "btn", textContent: "שליחה" });
-  const formEl = el("form", { noValidate: true }, el("h1", { textContent: def.title }), fieldsCard, legalCard, signatureCard, submit);
+  const formEl = el("form", { noValidate: true }, el("h1", { textContent: def.title }), ...sectionCards.values(), legalCard, ...signatureCards, submit);
   content.replaceChildren(formEl);
 
-  const pad = signaturePad(canvas, has => {
-    hint.hidden = has;
-    if (has) { signatureWrap.classList.remove("invalid"); signatureError.textContent = ""; }
-  });
-  clearButton.addEventListener("click", () => pad.clear());
-  renderLegal();
+  for (const field of def.fields) {
+    if (field.type !== "signature") continue;
+    const { canvas, hint, clear } = controls[field.key];
+    pads[field.key] = signaturePad(canvas, has => {
+      hint.hidden = has;
+      if (has) setError(field.key, "");
+    });
+    clear.addEventListener("click", () => pads[field.key].clear());
+  }
+  refresh();
 
   const showErrors = errors => {
     let first = null;
     for (const field of def.fields) {
       const message = errors[field.key] || "";
-      errorEls[field.key].textContent = message;
-      wrappers[field.key].classList.toggle("invalid", Boolean(message));
-      if (message && !first) first = inputs[field.key];
-    }
-    if (errors.signature) {
-      signatureError.textContent = errors.signature;
-      signatureWrap.classList.add("invalid");
-      first ||= canvas;
+      setError(field.key, message);
+      if (message && !first) first = controls[field.key].focus;
     }
     first?.scrollIntoView({ behavior: "smooth", block: "center" });
   };
 
   formEl.addEventListener("submit", async event => {
     event.preventDefault();
-    const fields = cleanFormFields(def, Object.fromEntries(Object.entries(inputs).map(([key, input]) => [key, input.value])));
+    const fields = readValues();
     const errors = validateFormFields(def, fields);
-    if (!pad.hasInk()) errors.signature = "חסרה חתימה";
+    const files = {};
+    for (const field of def.fields) {
+      if (!isFileField(field) || !isFieldVisible(field, fields)) continue;
+      if (field.type === "signature") {
+        if (pads[field.key].hasInk()) files[field.key] = pads[field.key].toDataURL();
+        else if (field.required) errors[field.key] = "חסרה חתימה";
+      } else if (images[field.key]) {
+        files[field.key] = images[field.key];
+      } else if (field.required) {
+        errors[field.key] ||= controls[field.key].error.textContent || "יש להעלות תמונה";
+      }
+    }
     if (Object.keys(errors).length) return showErrors(errors);
 
     submit.disabled = true;
     submit.textContent = "שולח…";
     try {
-      const { ok, data } = await postJson("/api/forms/submit", { form: def.id, token, fields, signature: pad.toDataURL() });
+      const { ok, data } = await postJson("/api/forms/submit", { form: def.id, token, fields, files });
       if (!ok) {
         if (data.fields) showErrors(data.fields);
         throw new Error(data.error || "השליחה נכשלה. נסו שוב.");
