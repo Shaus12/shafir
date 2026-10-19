@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { sealFormToken, openFormToken, FORM_TOKEN_TTL_MS } from "../src/forms/token.mjs";
 import { isValidIsraeliId, cleanIsraeliId, cleanFormFields, validateFormFields, israeliIdsInText } from "../src/forms/validate.mjs";
 import { extractFormFields } from "../src/forms/extract.mjs";
+import { missingRequiredCount, formTemplates, isEmptyFormRequest, parseLabeledLines } from "../src/forms/template.mjs";
 import { getFormDefinition, findFormByTrigger, renderFormBody, onlyVisibleValues, formSummary } from "../src/forms/definitions.mjs";
 import { formLinkReply } from "../api/agent4u/webhook.mjs";
 
@@ -266,4 +267,77 @@ test("work order bot reply lists only missing fields of the chosen customer type
   assert.ok(reply.includes("פרטים שלא זוהו והלקוח ישלים בטופס: כתובת אימייל לשליחת העתק הזמנה."));
   const noType = formLinkReply(workOrder, cleanFormFields(workOrder, { work_description: "x", insurance_company: "y" }), "https://example.com/x");
   assert.ok(noType.includes("פרטים שלא זוהו והלקוח ישלים בטופס: סוג לקוח."));
+});
+
+const emptyModelAnswer = def => Object.fromEntries(def.fields
+  .filter(field => !["israeli_id", "signature", "image"].includes(field.type))
+  .map(field => [field.key, ""]));
+
+test("missing required details are counted without signatures and images", () => {
+  assert.equal(missingRequiredCount(waiver, fields), 0);
+  assert.equal(missingRequiredCount(waiver, { ...fields, id_number: "" }), 1);
+  assert.equal(missingRequiredCount(waiver, { full_name: "משה כהן" }), 3);
+  assert.equal(missingRequiredCount(workOrder, privateOrder), 0);
+  assert.equal(missingRequiredCount(workOrder, { ...privateOrder, private_fax: "", private_email: "", private_phone: "" }), 2);
+  assert.equal(missingRequiredCount(workOrder, corporateOrder), 0);
+  assert.equal(missingRequiredCount(workOrder, { work_description: "x", insurance_company: "y" }), 6);
+  assert.equal(missingRequiredCount(workOrder, { ...privateOrder, customer_type: "" }), 1);
+});
+
+test("fill-in templates are built from the definition", () => {
+  assert.deepEqual(formTemplates(waiver, { full_name: "משה כהן" }), [
+    "כתב ויתור\nשם מלא: משה כהן\nמספר זהות: \nתיאור הנזק: \nחברת ביטוח: ",
+  ]);
+  assert.deepEqual(formTemplates(workOrder, { work_description: "נזקי מים", customer_type: "private" }), [
+    "הזמנת עבודה\nתיאור העבודה: נזקי מים\nחברת ביטוח: \nסוג לקוח: לקוח פרטי\nשם: \nתעודת זהות: \nכתובת: \nטלפון: \nפקס: \nכתובת אימייל לשליחת העתק הזמנה: ",
+  ]);
+  assert.deepEqual(formTemplates(workOrder, { insurance_company: "הראל" }), [
+    "הזמנת עבודה\nתיאור העבודה: \nחברת ביטוח: הראל\nסוג לקוח: לקוח פרטי\nשם: \nתעודת זהות: \nכתובת: \nטלפון: \nפקס: \nכתובת אימייל לשליחת העתק הזמנה: ",
+    "הזמנת עבודה\nתיאור העבודה: \nחברת ביטוח: הראל\nסוג לקוח: לקוח שהוא תאגיד\nשם התאגיד: \nח.פ: \nשם הערב האישי לתשלום: \nתעודת זהות של הערב האישי לתשלום: \nכתובת: \nטלפון: \nשם מלא (נחתם בנוכחות): ",
+  ]);
+});
+
+test("the trigger followed by ריק asks for an empty link", () => {
+  assert.ok(isEmptyFormRequest(workOrder, "הזמנת עבודה ריק"));
+  assert.ok(isEmptyFormRequest(workOrder, "  הזמנת עבודה, ריק."));
+  assert.ok(isEmptyFormRequest(waiver, "כתב ויתור ריק"));
+  assert.ok(isEmptyFormRequest(waiver, "כתב קבלה וויתור ריק"));
+  assert.equal(isEmptyFormRequest(waiver, "כתב ויתור ריקי כהן"), false);
+  assert.equal(isEmptyFormRequest(waiver, "כתב ויתור משה כהן ריק"), false);
+  assert.equal(isEmptyFormRequest(workOrder, "כתב ויתור ריק"), false);
+});
+
+test("a filled template is read back in code, including the ID line", async () => {
+  const corporateTemplate = [
+    "הזמנת עבודה",
+    "תיאור העבודה: נזקי מים במשרד",
+    "חברת ביטוח: מגדל",
+    "סוג לקוח: לקוח שהוא תאגיד",
+    'שם התאגיד: אבג בע"מ',
+    "ח.פ: 51-555555-5",
+    "שם הערב האישי לתשלום: דנה לוי",
+    "תעודת זהות של הערב האישי לתשלום: \u200F123-45678-2",
+    "כתובת: העצמאות 5, באר שבע",
+    "טלפון: 08-6234567",
+    "שם מלא (נחתם בנוכחות): יוסי מזרחי",
+  ].join("\n");
+  const { fetch } = fakeModel(emptyModelAnswer(workOrder));
+  const { fields: result, invalid } = await extractFormFields(workOrder, corporateTemplate, { apiKey: "test", fetch });
+  assert.deepEqual(invalid, []);
+  assert.equal(missingRequiredCount(workOrder, result), 0);
+  assert.deepEqual(validateFormFields(workOrder, result), {});
+  for (const [key, value] of Object.entries(corporateOrder)) assert.equal(result[key], value, key);
+
+  const privateTemplate = "הזמנת עבודה\nתיאור העבודה: נזקי מים\nחברת ביטוח: הראל\nסוג לקוח: לקוח פרטי\nשם: משה כהן\nתעודת זהות: 123456789\nכתובת: \nטלפון: 050-1234567\nפקס: \nכתובת אימייל לשליחת העתק הזמנה: moshe@example.com";
+  const second = fakeModel({ ...emptyModelAnswer(workOrder), private_address: "ניחוש" });
+  const parsed = await extractFormFields(workOrder, privateTemplate, { apiKey: "test", fetch: second.fetch });
+  assert.equal(parsed.fields.private_id, "");
+  assert.deepEqual(parsed.invalid, ["private_id"]);
+  assert.equal(parsed.fields.private_address, "");
+  assert.equal(parsed.fields.private_phone, "0501234567");
+
+  assert.deepEqual(parseLabeledLines(waiver, "כתב ויתור\nשם מלא: משה כהן\nמספר זהות: 123456782\nתיאור הנזק: \nחברת ביטוח: הראל"), {
+    full_name: "משה כהן", id_number: "123456782", damage_description: "", insurance_company: "הראל",
+  });
+  assert.deepEqual(parseLabeledLines(waiver, 'כתב ויתור, משה כהן, ת"ז: 123456782'), {});
 });

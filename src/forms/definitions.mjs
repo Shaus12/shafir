@@ -26,6 +26,7 @@
 //   when:      optional { choiceKey: value }, the field exists only when that choice has that value
 //   section:   page card the field appears in (default "פרטי הלקוח"); signatures get their own cards below the text
 //   pageLabel: optional heading for a signature card (defaults to label)
+//   templateLabel: optional label in the bot's fill-in template, when the label alone is ambiguous (defaults to label)
 //   hint:      tells the extraction model what the field means
 // }
 //
@@ -93,7 +94,7 @@ export const FORM_DEFINITIONS = Object.freeze([
       { key: "guarantor_signature", label: "חתימת הערב האישי לתשלום", type: "signature", required: true, when: { customer_type: "corporate" } },
       { key: "company_address", label: "כתובת", type: "text", required: true, maxLength: 150, when: { customer_type: "corporate" }, hint: "כתובת התאגיד, כשהלקוח תאגיד" },
       { key: "company_phone", label: "טלפון", type: "phone", required: true, maxLength: 20, when: { customer_type: "corporate" }, hint: "טלפון התאגיד, כשהלקוח תאגיד" },
-      { key: "witness_name", label: "שם מלא", type: "text", required: true, maxLength: 80, when: { customer_type: "corporate" }, section: "נחתם בנוכחות", hint: "שם מי שנכח בחתימה, רק אם נכתב במפורש" },
+      { key: "witness_name", label: "שם מלא", templateLabel: "שם מלא (נחתם בנוכחות)", type: "text", required: true, maxLength: 80, when: { customer_type: "corporate" }, section: "נחתם בנוכחות", hint: "שם מי שנכח בחתימה, רק אם נכתב במפורש" },
       { key: "witness_signature", label: "חתימה", pageLabel: "חתימה (נחתם בנוכחות)", type: "signature", required: true, when: { customer_type: "corporate" }, section: "נחתם בנוכחות" },
     ],
     body: [

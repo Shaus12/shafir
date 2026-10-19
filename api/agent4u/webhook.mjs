@@ -16,6 +16,8 @@ import { CRM_MEDIA_URL, sendToWorker, sendFile } from "../../src/agent4u-crm.mjs
 import { findFormByTrigger, FORM_DEFINITIONS, visibleFields, isFileField } from "../../src/forms/definitions.mjs";
 import { extractFormFields } from "../../src/forms/extract.mjs";
 import { sealFormToken, formsSecretConfigured } from "../../src/forms/token.mjs";
+import { cleanFormFields } from "../../src/forms/validate.mjs";
+import { formTemplates, isEmptyFormRequest, missingRequiredCount, MAX_MISSING_FOR_LINK } from "../../src/forms/template.mjs";
 
 export { mediaIdFrom, fileBase64, base64MatchesBytes } from "../../src/agent4u-crm.mjs";
 
@@ -38,7 +40,7 @@ const HELP_MESSAGE = `שלום! אפשר לשלוח לי:
 - תיאור עבודה בטקסט או בהקלטה (למשל: "צביעה 40 מ"ר, שני שקעים") ואחזיר סעיפים, קובץ אקסל וקובץ SKN.
 - צילום או PDF של חשבונית, קבלה או תעודת משלוח, ואחזיר את הפרטים שזיהיתי.${FORM_DEFINITIONS
   .filter(def => def.example)
-  .map(def => `\n- טופס לחתימה: ${def.example}, ואשלח קישור לחתימה.`)
+  .map(def => `\n- טופס לחתימה: ${def.example}, ואשלח קישור לחתימה. לקישור ריק כתבו "${def.triggers[0]} ריק".`)
   .join("")}`;
 
 const DOCUMENT_KINDS = new Set(["image", "photo", "document", "file", "pdf"]);
@@ -50,6 +52,8 @@ const DOC_PROCESS_ERROR = "לא הצלחנו לקרוא את המסמך כרגע
 const DOC_NONE_FOUND = "לא זוהה מסמך ספק בקובץ. נסו לצלם שוב, ישר ובתאורה טובה.";
 const SINGLE_MESSAGE_LIMIT = 1500;
 const FORM_ERROR = "לא הצלחנו ליצור את הטופס כרגע. נסו שוב.";
+const FORM_TEMPLATE_REPLY = "חסרים פרטים לטופס. העתיקו את ההודעה הבאה, מלאו ושלחו אותה בחזרה:";
+const TEMPLATE_DELAY_MS = 1500;
 
 function send(res, status, body) {
   res.statusCode = status;
@@ -504,8 +508,16 @@ function publicBaseUrl(req) {
   return /^[a-z0-9.-]+(:\d+)?$/i.test(host) ? `https://${host}` : "";
 }
 
-export function formLinkReply(def, fields, url, { invalid = [] } = {}) {
-  const missing = visibleFields(def, fields)
+/** Each template as its own message after the webhook reply, so it can be copied cleanly. Sent once, no retry. */
+async function sendFormTemplates(clientId, templates) {
+  await new Promise(resolve => setTimeout(resolve, TEMPLATE_DELAY_MS));
+  for (const template of templates) {
+    if (!(await sendToWorker(clientId, template))) return;
+  }
+}
+
+export function formLinkReply(def, fields, url, { invalid = [], empty = false } = {}) {
+  const missing = empty ? [] : visibleFields(def, fields)
     .filter(field => field.required && !isFileField(field) && !fields[field.key] && !invalid.includes(field.key))
     .map(field => field.label);
   return [
@@ -621,9 +633,16 @@ export default async function handler(req, res) {
     try {
       const baseUrl = publicBaseUrl(req);
       if (!baseUrl) throw new Error("missing host");
-      const { fields, invalid } = await extractFormFields(formDef, messageText);
+      const empty = isEmptyFormRequest(formDef, messageText);
+      const { fields, invalid } = empty
+        ? { fields: cleanFormFields(formDef, {}), invalid: [] }
+        : await extractFormFields(formDef, messageText);
+      if (!empty && missingRequiredCount(formDef, fields) > MAX_MISSING_FOR_LINK) {
+        waitUntil(sendFormTemplates(clientId, formTemplates(formDef, fields)));
+        return send(res, 200, { reply: FORM_TEMPLATE_REPLY });
+      }
       const token = sealFormToken({ formId: formDef.id, fields, clientId, workerPhone: normalizePhone(senderPhone) });
-      return send(res, 200, { reply: formLinkReply(formDef, fields, `${baseUrl}/forms/${formDef.id}?t=${token}`, { invalid }) });
+      return send(res, 200, { reply: formLinkReply(formDef, fields, `${baseUrl}/forms/${formDef.id}?t=${token}`, { invalid, empty }) });
     } catch (error) {
       console.error("Form link failed", error?.status || error?.name || "Error");
       return send(res, 200, { reply: FORM_ERROR });
