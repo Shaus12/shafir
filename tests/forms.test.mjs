@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sealFormToken, openFormToken, FORM_TOKEN_TTL_MS } from "../src/forms/token.mjs";
-import { isValidIsraeliId, cleanFormFields, validateFormFields } from "../src/forms/validate.mjs";
+import { isValidIsraeliId, cleanIsraeliId, cleanFormFields, validateFormFields } from "../src/forms/validate.mjs";
 import { getFormDefinition, findFormByTrigger, renderFormBody } from "../src/forms/definitions.mjs";
 import { formLinkReply } from "../api/agent4u/webhook.mjs";
 
@@ -34,10 +34,28 @@ test("form token rejects tampering, wrong secret and expiry", () => {
 test("Israeli ID checksum", () => {
   assert.ok(isValidIsraeliId("123456782"));
   assert.ok(isValidIsraeliId("000000018"));
+  assert.ok(isValidIsraeliId("18"));
+  assert.ok(isValidIsraeliId("123-45678-2"));
+  assert.ok(isValidIsraeliId("\u200F123456782"));
+  assert.ok(isValidIsraeliId("\u202B123 456 782\u202C\u200E"));
   assert.equal(isValidIsraeliId("123456789"), false);
+  assert.equal(isValidIsraeliId("1234567820"), false);
   assert.equal(isValidIsraeliId("000000000"), false);
-  assert.equal(isValidIsraeliId("12a456782"), false);
   assert.equal(isValidIsraeliId(""), false);
+});
+
+test("Israeli ID cleaning keeps digits only and pads to 9", () => {
+  assert.equal(cleanIsraeliId("18"), "000000018");
+  assert.equal(cleanIsraeliId("123-45678-2"), "123456782");
+  assert.equal(cleanIsraeliId("\u200F123456782"), "123456782");
+  assert.equal(cleanIsraeliId("1234567820"), "1234567820");
+  assert.equal(cleanIsraeliId(""), "");
+  const cleaned = cleanFormFields(waiver, { ...fields, id_number: "\u200F123-45678-2" });
+  assert.equal(cleaned.id_number, "123456782");
+  assert.deepEqual(validateFormFields(waiver, cleaned), {});
+  assert.deepEqual(validateFormFields(waiver, cleanFormFields(waiver, { ...fields, id_number: "1234567820" })), {
+    id_number: "מספר זהות לא תקין",
+  });
 });
 
 test("fields are cleaned and validated per definition", () => {

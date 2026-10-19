@@ -119,7 +119,7 @@ function renderForm(values) {
     const input = field.type === "textarea"
       ? el("textarea", { id, name: field.key, maxLength: field.maxLength || 200 })
       : el("input", { id, name: field.key, type: "text", maxLength: field.maxLength || 200, autocomplete: "off" });
-    if (field.type === "israeli_id") Object.assign(input, { inputMode: "numeric", pattern: "[0-9]*" });
+    if (field.type === "israeli_id") Object.assign(input, { type: "text", inputMode: "numeric", maxLength: 20 });
     input.value = values[field.key] || "";
     input.addEventListener("input", () => {
       wrappers[field.key].classList.remove("invalid");

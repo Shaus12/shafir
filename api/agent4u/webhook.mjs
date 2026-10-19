@@ -13,7 +13,7 @@ import {
 } from "../../src/document-extraction.mjs";
 import { matchDocuments, formatMatchReport } from "../../src/document-matching.mjs";
 import { CRM_MEDIA_URL, sendToWorker, sendFile } from "../../src/agent4u-crm.mjs";
-import { findFormByTrigger } from "../../src/forms/definitions.mjs";
+import { findFormByTrigger, FORM_DEFINITIONS } from "../../src/forms/definitions.mjs";
 import { extractFormFields } from "../../src/forms/extract.mjs";
 import { sealFormToken, formsSecretConfigured } from "../../src/forms/token.mjs";
 
@@ -36,7 +36,10 @@ const VOICE_PROCESS_ERROR = "לא הצלחנו לעבד את ההקלטה כרג
 
 const HELP_MESSAGE = `שלום! אפשר לשלוח לי:
 - תיאור עבודה בטקסט או בהקלטה (למשל: "צביעה 40 מ"ר, שני שקעים") ואחזיר סעיפים, קובץ אקסל וקובץ SKN.
-- צילום או PDF של חשבונית, קבלה או תעודת משלוח, ואחזיר את הפרטים שזיהיתי.`;
+- צילום או PDF של חשבונית, קבלה או תעודת משלוח, ואחזיר את הפרטים שזיהיתי.${FORM_DEFINITIONS
+  .filter(def => def.example)
+  .map(def => `\n- טופס לחתימה: ${def.example}, ואשלח קישור לחתימה.`)
+  .join("")}`;
 
 const DOCUMENT_KINDS = new Set(["image", "photo", "document", "file", "pdf"]);
 const DOC_ACK = "קיבלתי את המסמך, קורא...";

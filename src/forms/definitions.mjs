@@ -10,6 +10,7 @@
 //              hint tells the extraction model what the field means
 //   body:      legal text lines; {key} is replaced by the field value, [signature] marks the signature line
 //   summaryField: field shown in the WhatsApp caption of the signed PDF
+//   example:   how to ask for the form, shown in the bot help message
 // }
 
 export const FORM_DEFINITIONS = Object.freeze([
@@ -36,6 +37,7 @@ export const FORM_DEFINITIONS = Object.freeze([
       'חתימת הלקוח [signature]',
     ],
     summaryField: "full_name",
+    example: 'כתבו "כתב ויתור" ואחריו שם, ת"ז, תיאור הנזק וחברת הביטוח',
   },
 ]);
 
