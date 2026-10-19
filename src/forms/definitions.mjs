@@ -12,6 +12,8 @@
 //   body:      [string | Block], the legal text and the details, in print order
 //   summaryField:  field key, or keys (the first visible non-empty one is used), shown in the WhatsApp caption
 //   captionPrefix: optional caption start (defaults to "<title> חתום")
+//   template:  optional field keys of the bot's fill-in template, in order (defaults to every text field);
+//              only the fields that exist for the chosen options are used
 // }
 //
 // Field = {
@@ -19,14 +21,15 @@
 //   type:      "text" | "textarea" | "israeli_id" | "company_number" | "phone" | "email" | "choice" | "image" | "signature"
 //                israeli_id:     Israeli ID with check digit; filled from the message text in code, never by the model
 //                company_number: 9 digits, no check digit
-//                choice:         radio buttons, `options: [{ value, label }]`
+//                choice:         radio buttons, `options: [{ value, label, word }]`; `word` right after the bot
+//                                trigger selects the option ("הזמנת עבודה פרטי"); `question` asks for it
 //                image:          a photo (JPG/PNG) uploaded on the page, compressed to 600 KB
 //                signature:      a finger signature on the page
 //   options:   for choice fields
 //   when:      optional { choiceKey: value }, the field exists only when that choice has that value
 //   section:   page card the field appears in (default "פרטי הלקוח"); signatures get their own cards below the text
 //   pageLabel: optional heading for a signature card (defaults to label)
-//   templateLabel: optional label in the bot's fill-in template, when the label alone is ambiguous (defaults to label)
+//   templateLabel: optional short label in the bot's fill-in template (defaults to label); both are accepted back
 //   hint:      tells the extraction model what the field means
 // }
 //
@@ -43,8 +46,8 @@ export const FORM_DEFINITIONS = Object.freeze([
     triggers: ["כתב ויתור", "כתב קבלה וויתור", "כתב קבלה ויתור"],
     preamble: ['בס"ד', 'לכבוד: שפיר שיקום נזקים בע"מ'],
     fields: [
-      { key: "full_name", label: "שם מלא", type: "text", required: true, maxLength: 80, hint: "השם המלא של הלקוח שחותם על הטופס" },
-      { key: "id_number", label: "מספר זהות", type: "israeli_id", required: true, maxLength: 9 },
+      { key: "full_name", label: "שם מלא", templateLabel: "שם", type: "text", required: true, maxLength: 80, hint: "השם המלא של הלקוח שחותם על הטופס" },
+      { key: "id_number", label: "מספר זהות", templateLabel: 'ת"ז', type: "israeli_id", required: true, maxLength: 9 },
       { key: "damage_description", label: "תיאור הנזק", type: "textarea", required: true, maxLength: 400, hint: "תיאור הנזק שתוקן" },
       { key: "insurance_company", label: "חברת ביטוח", type: "text", required: true, maxLength: 60, hint: "שם חברת הביטוח של הלקוח" },
       { key: "signature", label: "חתימת הלקוח", type: "signature", required: true },
@@ -74,27 +77,28 @@ export const FORM_DEFINITIONS = Object.freeze([
       { key: "insurance_company", label: "חברת ביטוח", type: "text", required: true, maxLength: 60, section: "פרטי ההזמנה", hint: "שם חברת הביטוח של הלקוח" },
       {
         key: "customer_type", label: "סוג לקוח", type: "choice", required: true, section: "פרטי ההזמנה",
-        options: [{ value: "private", label: "לקוח פרטי" }, { value: "corporate", label: "לקוח שהוא תאגיד" }],
+        options: [{ value: "private", label: "לקוח פרטי", word: "פרטי" }, { value: "corporate", label: "לקוח שהוא תאגיד", word: "תאגיד" }],
+        question: "לקוח פרטי או תאגיד?",
         hint: "private אם נכתב שהלקוח פרטי, corporate אם נכתב שהלקוח תאגיד או חברה",
       },
 
-      { key: "private_name", label: "שם", type: "text", required: true, maxLength: 80, when: { customer_type: "private" }, hint: "שם הלקוח, כשהלקוח פרטי" },
-      { key: "private_id", label: "תעודת זהות", type: "israeli_id", required: true, maxLength: 9, when: { customer_type: "private" } },
+      { key: "private_name", label: "שם", templateLabel: "שם", type: "text", required: true, maxLength: 80, when: { customer_type: "private" }, hint: "שם הלקוח, כשהלקוח פרטי" },
+      { key: "private_id", label: "תעודת זהות", templateLabel: 'ת"ז', type: "israeli_id", required: true, maxLength: 9, when: { customer_type: "private" } },
       { key: "private_address", label: "כתובת", type: "text", required: true, maxLength: 150, when: { customer_type: "private" }, hint: "כתובת הלקוח, כשהלקוח פרטי" },
       { key: "private_phone", label: "טלפון", type: "phone", required: true, maxLength: 20, when: { customer_type: "private" }, hint: "טלפון הלקוח, כשהלקוח פרטי" },
       { key: "private_fax", label: "פקס", type: "phone", required: false, maxLength: 20, when: { customer_type: "private" }, hint: "מספר פקס, רק אם נכתב שזה פקס" },
-      { key: "private_email", label: "כתובת אימייל לשליחת העתק הזמנה", type: "email", required: true, maxLength: 120, when: { customer_type: "private" }, hint: "כתובת האימייל של הלקוח, כשהלקוח פרטי" },
+      { key: "private_email", label: "כתובת אימייל לשליחת העתק הזמנה", templateLabel: "מייל", type: "email", required: true, maxLength: 120, when: { customer_type: "private" }, hint: "כתובת האימייל של הלקוח, כשהלקוח פרטי" },
       { key: "private_signature", label: "חתימת הלקוח", type: "signature", required: true, when: { customer_type: "private" } },
 
       { key: "company_name", label: "שם התאגיד", type: "text", required: true, maxLength: 100, when: { customer_type: "corporate" }, hint: "שם התאגיד או החברה" },
       { key: "company_number", label: "ח.פ", type: "company_number", required: true, maxLength: 9, when: { customer_type: "corporate" }, hint: "מספר ח.פ של התאגיד, ספרות בלבד" },
       { key: "company_stamp", label: "תמונת חתימה וחותמת התאגיד", type: "image", required: true, when: { customer_type: "corporate" } },
-      { key: "guarantor_name", label: "שם הערב האישי לתשלום", type: "text", required: true, maxLength: 80, when: { customer_type: "corporate" }, hint: "שם הערב האישי לתשלום, רק אם נכתב במפורש שהוא ערב" },
-      { key: "guarantor_id", label: "תעודת זהות של הערב האישי לתשלום", type: "israeli_id", required: true, maxLength: 9, when: { customer_type: "corporate" } },
+      { key: "guarantor_name", label: "שם הערב האישי לתשלום", templateLabel: "שם הערב", type: "text", required: true, maxLength: 80, when: { customer_type: "corporate" }, hint: "שם הערב האישי לתשלום, רק אם נכתב במפורש שהוא ערב" },
+      { key: "guarantor_id", label: "תעודת זהות של הערב האישי לתשלום", templateLabel: 'ת"ז הערב', type: "israeli_id", required: true, maxLength: 9, when: { customer_type: "corporate" } },
       { key: "guarantor_signature", label: "חתימת הערב האישי לתשלום", type: "signature", required: true, when: { customer_type: "corporate" } },
       { key: "company_address", label: "כתובת", type: "text", required: true, maxLength: 150, when: { customer_type: "corporate" }, hint: "כתובת התאגיד, כשהלקוח תאגיד" },
       { key: "company_phone", label: "טלפון", type: "phone", required: true, maxLength: 20, when: { customer_type: "corporate" }, hint: "טלפון התאגיד, כשהלקוח תאגיד" },
-      { key: "witness_name", label: "שם מלא", templateLabel: "שם מלא (נחתם בנוכחות)", type: "text", required: true, maxLength: 80, when: { customer_type: "corporate" }, section: "נחתם בנוכחות", hint: "שם מי שנכח בחתימה, רק אם נכתב במפורש" },
+      { key: "witness_name", label: "שם מלא", templateLabel: "שם העד", type: "text", required: true, maxLength: 80, when: { customer_type: "corporate" }, section: "נחתם בנוכחות", hint: "שם מי שנכח בחתימה, רק אם נכתב במפורש" },
       { key: "witness_signature", label: "חתימה", pageLabel: "חתימה (נחתם בנוכחות)", type: "signature", required: true, when: { customer_type: "corporate" }, section: "נחתם בנוכחות" },
     ],
     body: [
@@ -113,7 +117,12 @@ export const FORM_DEFINITIONS = Object.freeze([
     ],
     summaryField: ["private_name", "company_name"],
     captionPrefix: "הזמנת עבודה חתומה",
-    example: 'כתבו "הזמנת עבודה" ואחריו סוג לקוח (פרטי/תאגיד), שם, ת"ז או ח.פ, כתובת, טלפון, מייל, תיאור העבודה וחברת הביטוח',
+    template: [
+      "private_name", "private_id", "private_phone", "private_address", "private_email",
+      "company_name", "company_number", "guarantor_name", "guarantor_id", "company_phone", "company_address", "witness_name",
+      "work_description", "insurance_company",
+    ],
+    example: 'כתבו "הזמנת עבודה פרטי" או "הזמנת עבודה תאגיד" ואחריו שם, ת"ז או ח.פ, כתובת, טלפון, מייל, תיאור העבודה וחברת הביטוח',
   },
 ]);
 

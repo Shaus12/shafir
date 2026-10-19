@@ -17,7 +17,14 @@ import { findFormByTrigger, FORM_DEFINITIONS, visibleFields, isFileField } from 
 import { extractFormFields } from "../../src/forms/extract.mjs";
 import { sealFormToken, formsSecretConfigured } from "../../src/forms/token.mjs";
 import { cleanFormFields } from "../../src/forms/validate.mjs";
-import { formTemplates, isEmptyFormRequest, missingRequiredCount, MAX_MISSING_FOR_LINK } from "../../src/forms/template.mjs";
+import {
+  formTemplates,
+  isEmptyFormRequest,
+  missingRequiredCount,
+  choiceQuestion,
+  choicesFromTrigger,
+  MAX_MISSING_FOR_LINK,
+} from "../../src/forms/template.mjs";
 
 export { mediaIdFrom, fileBase64, base64MatchesBytes } from "../../src/agent4u-crm.mjs";
 
@@ -52,7 +59,7 @@ const DOC_PROCESS_ERROR = "לא הצלחנו לקרוא את המסמך כרגע
 const DOC_NONE_FOUND = "לא זוהה מסמך ספק בקובץ. נסו לצלם שוב, ישר ובתאורה טובה.";
 const SINGLE_MESSAGE_LIMIT = 1500;
 const FORM_ERROR = "לא הצלחנו ליצור את הטופס כרגע. נסו שוב.";
-const FORM_TEMPLATE_REPLY = "חסרים פרטים לטופס. העתיקו את ההודעה הבאה, מלאו ושלחו אותה בחזרה:";
+const FORM_TEMPLATE_REPLY = "העתיקו את ההודעה הבאה, מלאו ושלחו. מה שלא תמלאו, הלקוח ישלים בטופס.";
 const TEMPLATE_DELAY_MS = 1500;
 
 function send(res, status, body) {
@@ -634,10 +641,12 @@ export default async function handler(req, res) {
       const baseUrl = publicBaseUrl(req);
       if (!baseUrl) throw new Error("missing host");
       const empty = isEmptyFormRequest(formDef, messageText);
-      const { fields, invalid } = empty
-        ? { fields: cleanFormFields(formDef, {}), invalid: [] }
+      const { fields, invalid, fromTemplate } = empty
+        ? { fields: cleanFormFields(formDef, choicesFromTrigger(formDef, messageText)), invalid: [], fromTemplate: false }
         : await extractFormFields(formDef, messageText);
-      if (!empty && missingRequiredCount(formDef, fields) > MAX_MISSING_FOR_LINK) {
+      if (!empty && !fromTemplate && missingRequiredCount(formDef, fields) > MAX_MISSING_FOR_LINK) {
+        const question = choiceQuestion(formDef, fields);
+        if (question) return send(res, 200, { reply: question });
         waitUntil(sendFormTemplates(clientId, formTemplates(formDef, fields)));
         return send(res, 200, { reply: FORM_TEMPLATE_REPLY });
       }

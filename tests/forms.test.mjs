@@ -3,7 +3,14 @@ import assert from "node:assert/strict";
 import { sealFormToken, openFormToken, FORM_TOKEN_TTL_MS } from "../src/forms/token.mjs";
 import { isValidIsraeliId, cleanIsraeliId, cleanFormFields, validateFormFields, israeliIdsInText } from "../src/forms/validate.mjs";
 import { extractFormFields } from "../src/forms/extract.mjs";
-import { missingRequiredCount, formTemplates, isEmptyFormRequest, parseLabeledLines } from "../src/forms/template.mjs";
+import {
+  missingRequiredCount,
+  formTemplates,
+  isEmptyFormRequest,
+  parseLabeledLines,
+  choiceQuestion,
+  choicesFromTrigger,
+} from "../src/forms/template.mjs";
 import { getFormDefinition, findFormByTrigger, renderFormBody, onlyVisibleValues, formSummary } from "../src/forms/definitions.mjs";
 import { formLinkReply } from "../api/agent4u/webhook.mjs";
 
@@ -284,22 +291,36 @@ test("missing required details are counted without signatures and images", () =>
   assert.equal(missingRequiredCount(workOrder, { ...privateOrder, customer_type: "" }), 1);
 });
 
-test("fill-in templates are built from the definition", () => {
+test("fill-in templates use short labels, and the trigger line carries the customer type", () => {
   assert.deepEqual(formTemplates(waiver, { full_name: "משה כהן" }), [
-    "כתב ויתור\nשם מלא: משה כהן\nמספר זהות: \nתיאור הנזק: \nחברת ביטוח: ",
+    'כתב ויתור\nשם: משה כהן\nת"ז: \nתיאור הנזק: \nחברת ביטוח: ',
   ]);
   assert.deepEqual(formTemplates(workOrder, { work_description: "נזקי מים", customer_type: "private" }), [
-    "הזמנת עבודה\nתיאור העבודה: נזקי מים\nחברת ביטוח: \nסוג לקוח: לקוח פרטי\nשם: \nתעודת זהות: \nכתובת: \nטלפון: \nפקס: \nכתובת אימייל לשליחת העתק הזמנה: ",
+    'הזמנת עבודה פרטי\nשם: \nת"ז: \nטלפון: \nכתובת: \nמייל: \nתיאור העבודה: נזקי מים\nחברת ביטוח: ',
   ]);
-  assert.deepEqual(formTemplates(workOrder, { insurance_company: "הראל" }), [
-    "הזמנת עבודה\nתיאור העבודה: \nחברת ביטוח: הראל\nסוג לקוח: לקוח פרטי\nשם: \nתעודת זהות: \nכתובת: \nטלפון: \nפקס: \nכתובת אימייל לשליחת העתק הזמנה: ",
-    "הזמנת עבודה\nתיאור העבודה: \nחברת ביטוח: הראל\nסוג לקוח: לקוח שהוא תאגיד\nשם התאגיד: \nח.פ: \nשם הערב האישי לתשלום: \nתעודת זהות של הערב האישי לתשלום: \nכתובת: \nטלפון: \nשם מלא (נחתם בנוכחות): ",
+  assert.deepEqual(formTemplates(workOrder, { insurance_company: "הראל", customer_type: "corporate" }), [
+    'הזמנת עבודה תאגיד\nשם התאגיד: \nח.פ: \nשם הערב: \nת"ז הערב: \nטלפון: \nכתובת: \nשם העד: \nתיאור העבודה: \nחברת ביטוח: הראל',
   ]);
+});
+
+test("work order without a customer type asks for it", () => {
+  assert.equal(choiceQuestion(workOrder, { work_description: "נזקי מים" }),
+    'לקוח פרטי או תאגיד? שלחו "הזמנת עבודה פרטי" או "הזמנת עבודה תאגיד".');
+  assert.equal(choiceQuestion(workOrder, { customer_type: "private" }), null);
+  assert.equal(choiceQuestion(waiver, {}), null);
+  assert.deepEqual(choicesFromTrigger(workOrder, "הזמנת עבודה פרטי"), { customer_type: "private" });
+  assert.deepEqual(choicesFromTrigger(workOrder, "הזמנת עבודה, תאגיד, אבג בע\"מ"), { customer_type: "corporate" });
+  assert.deepEqual(choicesFromTrigger(workOrder, "הזמנת עבודה תאגיד\nשם התאגיד: אבג"), { customer_type: "corporate" });
+  assert.deepEqual(choicesFromTrigger(workOrder, "הזמנת עבודה פרטית"), {});
+  assert.deepEqual(choicesFromTrigger(workOrder, "הזמנת עבודה משה כהן פרטי"), {});
+  assert.deepEqual(choicesFromTrigger(waiver, "כתב ויתור פרטי"), {});
 });
 
 test("the trigger followed by ריק asks for an empty link", () => {
   assert.ok(isEmptyFormRequest(workOrder, "הזמנת עבודה ריק"));
   assert.ok(isEmptyFormRequest(workOrder, "  הזמנת עבודה, ריק."));
+  assert.ok(isEmptyFormRequest(workOrder, "הזמנת עבודה תאגיד ריק"));
+  assert.equal(isEmptyFormRequest(workOrder, "הזמנת עבודה פרטי"), false);
   assert.ok(isEmptyFormRequest(waiver, "כתב ויתור ריק"));
   assert.ok(isEmptyFormRequest(waiver, "כתב קבלה וויתור ריק"));
   assert.equal(isEmptyFormRequest(waiver, "כתב ויתור ריקי כהן"), false);
@@ -307,37 +328,60 @@ test("the trigger followed by ריק asks for an empty link", () => {
   assert.equal(isEmptyFormRequest(workOrder, "כתב ויתור ריק"), false);
 });
 
-test("a filled template is read back in code, including the ID line", async () => {
-  const corporateTemplate = [
-    "הזמנת עבודה",
-    "תיאור העבודה: נזקי מים במשרד",
-    "חברת ביטוח: מגדל",
-    "סוג לקוח: לקוח שהוא תאגיד",
+test("a filled template is read back in code, with short or original labels", async () => {
+  const shortLabels = [
+    "הזמנת עבודה תאגיד",
     'שם התאגיד: אבג בע"מ',
     "ח.פ: 51-555555-5",
-    "שם הערב האישי לתשלום: דנה לוי",
-    "תעודת זהות של הערב האישי לתשלום: \u200F123-45678-2",
-    "כתובת: העצמאות 5, באר שבע",
+    "שם הערב: דנה לוי",
+    "ת״ז הערב: \u200F123-45678-2",
     "טלפון: 08-6234567",
-    "שם מלא (נחתם בנוכחות): יוסי מזרחי",
+    "כתובת: העצמאות 5, באר שבע",
+    "שם העד: יוסי מזרחי",
+    "תיאור העבודה: נזקי מים במשרד",
+    "חברת ביטוח: מגדל",
   ].join("\n");
-  const { fetch } = fakeModel(emptyModelAnswer(workOrder));
-  const { fields: result, invalid } = await extractFormFields(workOrder, corporateTemplate, { apiKey: "test", fetch });
-  assert.deepEqual(invalid, []);
-  assert.equal(missingRequiredCount(workOrder, result), 0);
-  assert.deepEqual(validateFormFields(workOrder, result), {});
-  for (const [key, value] of Object.entries(corporateOrder)) assert.equal(result[key], value, key);
+  const originalLabels = [
+    "הזמנת עבודה תאגיד",
+    'שם התאגיד: אבג בע"מ',
+    "ח.פ: 515555555",
+    "שם הערב האישי לתשלום: דנה לוי",
+    "תעודת זהות של הערב האישי לתשלום: 123456782",
+    "טלפון: 086234567",
+    "כתובת: העצמאות 5, באר שבע",
+    "שם מלא: יוסי מזרחי",
+    "תיאור העבודה: נזקי מים במשרד",
+    "חברת ביטוח: מגדל",
+  ].join("\n");
+  for (const template of [shortLabels, originalLabels]) {
+    const { fetch } = fakeModel(emptyModelAnswer(workOrder));
+    const { fields: result, invalid, fromTemplate } = await extractFormFields(workOrder, template, { apiKey: "test", fetch });
+    assert.equal(fromTemplate, true);
+    assert.deepEqual(invalid, []);
+    assert.equal(missingRequiredCount(workOrder, result), 0);
+    assert.deepEqual(validateFormFields(workOrder, result), {});
+    for (const [key, value] of Object.entries(corporateOrder)) assert.equal(result[key], value, key);
+  }
 
-  const privateTemplate = "הזמנת עבודה\nתיאור העבודה: נזקי מים\nחברת ביטוח: הראל\nסוג לקוח: לקוח פרטי\nשם: משה כהן\nתעודת זהות: 123456789\nכתובת: \nטלפון: 050-1234567\nפקס: \nכתובת אימייל לשליחת העתק הזמנה: moshe@example.com";
-  const second = fakeModel({ ...emptyModelAnswer(workOrder), private_address: "ניחוש" });
+  const privateTemplate = 'הזמנת עבודה פרטי\nשם: משה כהן\nת"ז: 123456789\nטלפון: 050-1234567\nכתובת: \nמייל: \nתיאור העבודה: נזקי מים\nחברת ביטוח: הראל';
+  const second = fakeModel({ ...emptyModelAnswer(workOrder), customer_type: "corporate", private_address: "ניחוש" });
   const parsed = await extractFormFields(workOrder, privateTemplate, { apiKey: "test", fetch: second.fetch });
+  assert.equal(parsed.fromTemplate, true);
+  assert.equal(parsed.fields.customer_type, "private");
   assert.equal(parsed.fields.private_id, "");
   assert.deepEqual(parsed.invalid, ["private_id"]);
   assert.equal(parsed.fields.private_address, "");
   assert.equal(parsed.fields.private_phone, "0501234567");
+  assert.equal(missingRequiredCount(workOrder, parsed.fields), 3);
 
-  assert.deepEqual(parseLabeledLines(waiver, "כתב ויתור\nשם מלא: משה כהן\nמספר זהות: 123456782\nתיאור הנזק: \nחברת ביטוח: הראל"), {
-    full_name: "משה כהן", id_number: "123456782", damage_description: "", insurance_company: "הראל",
-  });
+  const freeText = fakeModel({ ...emptyModelAnswer(workOrder), work_description: "נזקי מים" });
+  const free = await extractFormFields(workOrder, "הזמנת עבודה נזקי מים", { apiKey: "test", fetch: freeText.fetch });
+  assert.equal(free.fromTemplate, false);
+  assert.ok(missingRequiredCount(workOrder, free.fields) > 2);
+  assert.notEqual(choiceQuestion(workOrder, free.fields), null);
+
+  const waiverValues = { full_name: "משה כהן", id_number: "123456782", damage_description: "", insurance_company: "הראל" };
+  assert.deepEqual(parseLabeledLines(waiver, 'כתב ויתור\nשם: משה כהן\nת"ז: 123456782\nתיאור הנזק: \nחברת ביטוח: הראל'), waiverValues);
+  assert.deepEqual(parseLabeledLines(waiver, "כתב ויתור\nשם מלא: משה כהן\nמספר זהות: 123456782\nתיאור הנזק: \nחברת ביטוח: הראל"), waiverValues);
   assert.deepEqual(parseLabeledLines(waiver, 'כתב ויתור, משה כהן, ת"ז: 123456782'), {});
 });

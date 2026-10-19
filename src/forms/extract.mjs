@@ -1,7 +1,7 @@
 import { EXTRACTION_MODEL } from "../proposed-items.mjs";
 import { isFileField, visibleFields } from "./definitions.mjs";
 import { cleanFormFields, cleanIsraeliId, isValidIsraeliId, israeliIdsInText } from "./validate.mjs";
-import { parseLabeledLines, templateLabel } from "./template.mjs";
+import { parseLabeledLines, templateLabel, choicesFromTrigger } from "./template.mjs";
 
 // Israeli ID fields are read from the message text in code; the model never sees or returns them.
 // Signature and image fields are filled on the page only.
@@ -19,7 +19,8 @@ function schemaFor(def) {
 }
 
 function fieldLine(field) {
-  const name = `- ${field.key} (בתבנית: "${templateLabel(field)}")`;
+  const labels = [...new Set([templateLabel(field), field.label])].map(label => `"${label}"`).join(" או ");
+  const name = `- ${field.key} (בתבנית: ${labels})`;
   if (field.type !== "choice") return `${name}: ${field.hint}`;
   const options = field.options.map(option => `"${option.value}" = ${option.label}`).join(", ");
   return `${name}: ${field.hint}. אפשרויות: ${options}, או "" אם לא נכתב במפורש`;
@@ -84,7 +85,9 @@ export function israeliIdFieldsFromText(def, text, values = {}, labeled = {}) {
 
 /**
  * Prefill a form from the worker's message. Missing values are empty strings; nothing is guessed.
- * Returns { fields, invalid }, where `invalid` lists ID fields whose number in the message was not valid.
+ * Returns { fields, invalid, fromTemplate }: `invalid` lists ID fields whose number in the message was not
+ * valid, `fromTemplate` is true when the message has template "label:" lines. A choice word right after the
+ * trigger ("הזמנת עבודה פרטי") wins over anything else.
  */
 export async function extractFormFields(def, text, { apiKey = process.env.OPENAI_API_KEY, fetch = globalThis.fetch } = {}) {
   if (!apiKey) {
@@ -118,9 +121,10 @@ export async function extractFormFields(def, text, { apiKey = process.env.OPENAI
     error.status = 502;
     throw error;
   }
-  const fromModel = cleanFormFields(def, JSON.parse(json));
+  const fromTrigger = choicesFromTrigger(def, text);
+  const fromModel = cleanFormFields(def, { ...JSON.parse(json), ...fromTrigger });
   const labeled = parseLabeledLines(def, text, fromModel);
-  const merged = cleanFormFields(def, { ...fromModel, ...labeled });
+  const merged = cleanFormFields(def, { ...fromModel, ...labeled, ...fromTrigger });
   const ids = israeliIdFieldsFromText(def, text, merged, labeled);
-  return { fields: { ...merged, ...ids.values }, invalid: ids.invalid };
+  return { fields: { ...merged, ...ids.values }, invalid: ids.invalid, fromTemplate: Object.keys(labeled).length > 0 };
 }
