@@ -1,6 +1,9 @@
 import crypto from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import { extractProposedItems, formatProposedItemsReply, SUBCHAPTER_MAP } from "../../src/proposed-items.mjs";
+import { wantsSkn, isSknOnlyRequest, findLastItems, historyFrom, withoutHistory, SKN_HINT, NO_RECENT_ITEMS } from "../../src/items-history.mjs";
+import { isInvoiceRequest, extractInvoice, invoiceTemplate } from "../../src/invoice/extract.mjs";
+import { sealInvoiceToken } from "../../src/invoice/service.mjs";
 import { quoteToSkn } from "../../src/skn/model.mjs";
 import { quoteToXlsx, XLSX_MIME } from "../../src/xlsx.mjs";
 import {
@@ -44,11 +47,12 @@ const VOICE_TRANSCRIBE_ERROR = "לא הצלחנו לתמלל את ההקלטה. 
 const VOICE_PROCESS_ERROR = "לא הצלחנו לעבד את ההקלטה כרגע. נסו שוב.";
 
 const HELP_MESSAGE = `שלום! אפשר לשלוח לי:
-- תיאור עבודה בטקסט או בהקלטה (למשל: "צביעה 40 מ"ר, שני שקעים") ואחזיר סעיפים, קובץ אקסל וקובץ SKN.
+- תיאור עבודה בטקסט או בהקלטה (למשל: "צביעה 40 מ"ר, שני שקעים") ואחזיר סעיפים וקובץ אקסל. לקובץ SKN לבינארית כתבו בסוף: לבינארית.
 - צילום או PDF של חשבונית, קבלה או תעודת משלוח, ואחזיר את הפרטים שזיהיתי.${FORM_DEFINITIONS
   .filter(def => def.example)
   .map(def => `\n- טופס לחתימה: ${def.example}, ואשלח קישור לחתימה. לקישור ריק כתבו "${def.triggers[0]} ריק".`)
-  .join("")}`;
+  .join("")}
+- חשבונית מס: כתבו "חשבונית" ואחריה שם הלקוח, ת"ז או ח"פ, כתובת, עיר, תיאור וסכום לפני מע"מ, ואשלח קישור לאישור והפקה.`;
 
 const DOCUMENT_KINDS = new Set(["image", "photo", "document", "file", "pdf"]);
 const DOC_ACK = "קיבלתי את המסמך, קורא...";
@@ -59,6 +63,7 @@ const DOC_PROCESS_ERROR = "לא הצלחנו לקרוא את המסמך כרגע
 const DOC_NONE_FOUND = "לא זוהה מסמך ספק בקובץ. נסו לצלם שוב, ישר ובתאורה טובה.";
 const SINGLE_MESSAGE_LIMIT = 1500;
 const FORM_ERROR = "לא הצלחנו ליצור את הטופס כרגע. נסו שוב.";
+const INVOICE_ERROR = "לא הצלחנו להכין את החשבונית כרגע. נסו שוב.";
 const FORM_TEMPLATE_REPLY = "העתיקו את ההודעה הבאה, מלאו ושלחו. מה שלא תמלאו, הלקוח ישלים בטופס.";
 const TEMPLATE_DELAY_MS = 1500;
 
@@ -349,19 +354,19 @@ export function quoteFileName(date = new Date()) {
   return `הצעה-${parts.year}-${parts.month}-${parts.day}-${parts.hour}${parts.minute}`;
 }
 
-async function sendQuoteFiles(clientId, items) {
+async function sendQuoteFiles(clientId, items, { skn: withSkn = false, xlsx: withXlsx = true } = {}) {
   if (!items.length) return;
   const quote = proposedItemsToQuote(items);
   const name = quoteFileName();
 
-  try {
+  if (withXlsx) try {
     const xlsx = new Uint8Array(await quoteToXlsx(quote, { prices: false }).arrayBuffer());
     await sendFile(clientId, "קובץ אקסל", "xlsx", xlsx, { mime: XLSX_MIME, filename: `${name}.xlsx` });
   } catch (error) {
     console.error("Excel file build failed", error?.name || "Error");
   }
 
-  try {
+  if (withSkn) try {
     const skn = quoteToSkn(quote);
     await sendFile(clientId, "קובץ לבינארית", "skn", skn, { mime: "application/octet-stream", filename: `${name}.skn` });
   } catch (error) {
@@ -438,7 +443,13 @@ function transcriptLine(transcript) {
   return `תמלול: ${oneLine.length > 200 ? `${oneLine.slice(0, 200)}…` : oneLine}`;
 }
 
-async function processVoiceNote(mediaUrl, clientId) {
+async function sendSknFromHistory(clientId, history) {
+  const items = findLastItems(history);
+  if (!items.length) return sendToWorker(clientId, NO_RECENT_ITEMS);
+  return sendQuoteFiles(clientId, items, { skn: true, xlsx: false });
+}
+
+async function processVoiceNote(mediaUrl, clientId, history = []) {
   try {
     const audio = await downloadAudio(mediaUrl);
     if (!audio) return sendToWorker(clientId, VOICE_DOWNLOAD_ERROR);
@@ -446,9 +457,12 @@ async function processVoiceNote(mediaUrl, clientId) {
     const transcript = await transcribeAudio(audio);
     if (!transcript) return sendToWorker(clientId, VOICE_TRANSCRIBE_ERROR);
 
+    if (isSknOnlyRequest(transcript)) return sendSknFromHistory(clientId, history);
     const { items } = await extractProposedItems(transcript);
-    await sendToWorker(clientId, `${transcriptLine(transcript)}\n\n${items.length ? formatProposedItemsReply(items) : HELP_MESSAGE}`);
-    return sendQuoteFiles(clientId, items);
+    const skn = wantsSkn(transcript);
+    const body = items.length ? `${formatProposedItemsReply(items)}${skn ? "" : `\n\n${SKN_HINT}`}` : HELP_MESSAGE;
+    await sendToWorker(clientId, `${transcriptLine(transcript)}\n\n${body}`);
+    return sendQuoteFiles(clientId, items, { skn });
   } catch (error) {
     console.error("Voice note processing failed", error?.name || "Error");
     return sendToWorker(clientId, VOICE_PROCESS_ERROR);
@@ -567,7 +581,8 @@ export default async function handler(req, res) {
 
   console.log("Agent4U webhook payload key structure:", JSON.stringify(getKeyStructure(payload)));
 
-  const { senderPhone, messageText, isNonText } = extractWebhookData(payload);
+  const history = historyFrom(payload);
+  const { senderPhone, messageText, isNonText } = extractWebhookData(withoutHistory(payload));
 
   const isDemoMode = String(process.env.AGENT4U_DEMO_MODE || "").toLowerCase() === "true" || process.env.AGENT4U_DEMO_MODE === "1";
   if (isDemoMode) {
@@ -595,7 +610,7 @@ export default async function handler(req, res) {
     if (!/^https?:\/\//i.test(mediaUrl) || clientId === undefined || clientId === null || clientId === "") {
       return send(res, 200, { reply: VOICE_PROCESS_ERROR });
     }
-    waitUntil(processVoiceNote(mediaUrl, clientId));
+    waitUntil(processVoiceNote(mediaUrl, clientId, history));
     return send(res, 200, { reply: VOICE_ACK });
   }
 
@@ -622,9 +637,45 @@ export default async function handler(req, res) {
     return send(res, 200, { reply: "כרגע ניתן לשלוח הודעות טקסט בלבד." });
   }
 
+  if (isSknOnlyRequest(messageText)) {
+    const clientId = payload.client?.id;
+    if (clientId === undefined || clientId === null || clientId === "" || !process.env.AGENT4U_API_KEY) {
+      return send(res, 200, { reply: NO_RECENT_ITEMS });
+    }
+    const items = findLastItems(history);
+    if (!items.length) return send(res, 200, { reply: NO_RECENT_ITEMS });
+    waitUntil(sendQuoteFiles(clientId, items, { skn: true, xlsx: false }));
+    return send(res, 200, { reply: "שולח את קובץ הבינארית..." });
+  }
+
   if (!process.env.OPENAI_API_KEY) {
     console.error("OPENAI_API_KEY is not configured");
     return send(res, 500, { error: "השירות אינו מוגדר כרגע." });
+  }
+
+  if (isInvoiceRequest(messageText)) {
+    const clientId = payload.client?.id;
+    if (!formsSecretConfigured()) {
+      console.error("FORMS_SECRET is not configured");
+      return send(res, 500, { error: "השירות אינו מוגדר כרגע." });
+    }
+    if (clientId === undefined || clientId === null || clientId === "") {
+      return send(res, 200, { reply: INVOICE_ERROR });
+    }
+    try {
+      const baseUrl = publicBaseUrl(req);
+      if (!baseUrl) throw new Error("missing host");
+      const { data, missing } = await extractInvoice(messageText);
+      if (missing.length) {
+        waitUntil(sendFormTemplates(clientId, [invoiceTemplate(data)]));
+        return send(res, 200, { reply: `${FORM_TEMPLATE_REPLY}\nחסר: ${missing.join(", ")}.` });
+      }
+      const token = sealInvoiceToken({ data, clientId, workerPhone: normalizePhone(senderPhone) });
+      return send(res, 200, { reply: `החשבונית מוכנה לאישור:\n${baseUrl}/invoice/approve?t=${token}\n\nהקישור אישי ובתוקף ל-7 ימים. בדף תראו תצוגה מלאה, תזינו את קוד האישור ותפיקו. אחרי ההפקה החשבונית תישלח לכאן כ-PDF.` });
+    } catch (error) {
+      console.error("Invoice request failed", error?.status || error?.name || "Error");
+      return send(res, 200, { reply: INVOICE_ERROR });
+    }
   }
 
   const formDef = findFormByTrigger(messageText);
@@ -660,10 +711,11 @@ export default async function handler(req, res) {
 
   try {
     const { items } = await extractProposedItems(messageText);
-    const reply = items.length ? formatProposedItemsReply(items) : HELP_MESSAGE;
+    const skn = wantsSkn(messageText);
+    const reply = items.length ? `${formatProposedItemsReply(items)}${skn ? "" : `\n\n${SKN_HINT}`}` : HELP_MESSAGE;
     const clientId = payload.client?.id;
     if (items.length && clientId !== undefined && clientId !== null && clientId !== "" && process.env.AGENT4U_API_KEY) {
-      waitUntil(sendQuoteFiles(clientId, items));
+      waitUntil(sendQuoteFiles(clientId, items, { skn }));
     }
     return send(res, 200, { reply });
   } catch (error) {

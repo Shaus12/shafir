@@ -10,6 +10,9 @@
       "memory": 2048,
       "includeFiles": "src/fonts/**"
     },
+    "api/invoice/approve.mjs": {
+      "maxDuration": 60
+    },
     "api/forms/submit.mjs": {
       "maxDuration": 30,
       "includeFiles": "{shafir-logo.png,assets/fonts/**}"
@@ -23,6 +26,10 @@
     }
   ],
   "rewrites": [
+    {
+      "source": "/invoice/approve",
+      "destination": "/invoice/index.html"
+    },
     {
       "source": "/forms/:id([a-z0-9-]+)",
       "destination": "/forms/index.html"
@@ -44,6 +51,23 @@
         {
           "key": "Content-Type",
           "value": "application/manifest+json"
+        }
+      ]
+    },
+    {
+      "source": "/invoice/(.*)",
+      "headers": [
+        {
+          "key": "Referrer-Policy",
+          "value": "no-referrer"
+        },
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        },
+        {
+          "key": "X-Robots-Tag",
+          "value": "noindex"
         }
       ]
     },
