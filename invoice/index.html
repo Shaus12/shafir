@@ -38,6 +38,7 @@ pre{direction:ltr;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;fo
   <p id="error" class="msg err" hidden></p>
   <div id="view" hidden>
     <div id="banner" class="banner" hidden>מצב בדיקה – לא תופק חשבונית אמיתית</div>
+    <section id="companies" class="card" hidden><h2>החברות בחשבון AccountBook</h2><p>העתיקו את המספר המתאים ל-ACCOUNTBOOK_ESEK_NUM</p><dl id="companylist"></dl><p id="companyerr" class="msg err" hidden></p></section>
     <section class="card"><h2>פרטי הלקוח</h2><dl id="customer"></dl></section>
     <section class="card"><h2>שורות</h2>
       <table><thead><tr><th>תיאור</th><th class="n">כמות</th><th class="n">מחיר</th><th class="n">סה"כ</th></tr></thead><tbody id="lines"></tbody></table>
@@ -66,6 +67,11 @@ async function call(path, body) {
 }
 function render(p) {
   $("banner").hidden = !p.dry_run;
+  if (p.companies) {
+    $("companies").hidden = false;
+    if (p.companies.error) { $("companyerr").textContent = p.companies.error; $("companyerr").hidden = false; }
+    for (const co of p.companies.items || []) $("companylist").append(text("dt", co.key), text("dd", co.value));
+  }
   const c = p.customer;
   for (const [k, v] of [["שם", c.name], ['ת"ז / ח"פ', c.idNumber], ["כתובת", c.address], ["עיר", c.city]]) {
     $("customer").append(text("dt", k), text("dd", v));

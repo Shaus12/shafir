@@ -8,7 +8,7 @@ import { sendToWorker, sendFile } from "../agent4u-crm.mjs";
 import {
   INVOICE_FORM_ID, buildInvoice, previewOf, buildDocumentJson, checkDocumentTotals, clientIdentifierFor, vatRateFromEnv,
 } from "./document.mjs";
-import { accountBookConfigured, getToken, findExistingDocument, createDocument, downloadPdf } from "./accountbook.mjs";
+import { accountBookLive, getToken, findExistingDocument, createDocument, listCompanies, downloadPdf } from "./accountbook.mjs";
 
 export const DRY_RUN_TITLE = "מצב בדיקה – לא הופקה חשבונית";
 export const MAX_WRONG_CODES = 5;
@@ -38,12 +38,31 @@ function invoiceFrom(opened) {
   }
 }
 
-const dryRunMode = () => !accountBookConfigured();
+const dryRunMode = () => !accountBookLive();
+
+/** Dry-run helper: the user's companies, so the right ACCOUNTBOOK_ESEK_NUM can be chosen. Never creates a document. */
+async function companiesForDryRun() {
+  const missing = ["ACCOUNTBOOK_USER", "ACCOUNTBOOK_PASS"].filter(name => !String(process.env[name] ?? "").trim());
+  if (missing.length) {
+    console.error("AccountBook credentials not set in this environment:", missing.join(", "));
+    return { error: "פרטי AccountBook לא הוגדרו" };
+  }
+  try {
+    return { items: await listCompanies(await getToken()) };
+  } catch (error) {
+    if (error?.name !== "AccountBookError") throw error;
+    console.error("AccountBook companies failed", error.code);
+    return { error: error.detail || error.code };
+  }
+}
 
 /** What the approval page shows. */
-export function openInvoice(token) {
+export async function openInvoice(token) {
   const opened = open(token);
-  return previewOf(invoiceFrom(opened), dryRunMode());
+  const preview = previewOf(invoiceFrom(opened), dryRunMode());
+  if (!preview.dry_run) return preview;
+  const companies = await companiesForDryRun();
+  return companies ? { ...preview, companies } : preview;
 }
 
 const sha = value => crypto.createHash("sha256").update(String(value)).digest();

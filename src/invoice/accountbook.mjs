@@ -6,15 +6,19 @@ const BASE = `https://${HOST}`;
 const MIN_GAP_MS = 100; // the API answers -2000 to calls less than 80 ms apart
 
 export class AccountBookError extends Error {
-  constructor(code) {
+  constructor(code, detail = "") {
     super(code);
     this.name = "AccountBookError";
     this.code = code;
+    this.detail = detail; // AccountBook's own error answer, shown as is; never holds a token
   }
 }
 
 export const accountBookConfigured = (env = process.env) =>
   Boolean(env.ACCOUNTBOOK_USER && env.ACCOUNTBOOK_PASS && /^\d+$/.test(String(env.ACCOUNTBOOK_ESEK_NUM || "").trim()));
+
+/** Real documents only when ACCOUNTBOOK_LIVE is exactly "true" and the credentials are all set. */
+export const accountBookLive = (env = process.env) => env.ACCOUNTBOOK_LIVE === "true" && accountBookConfigured(env);
 
 let lastCall = 0;
 async function paced() {
@@ -54,7 +58,7 @@ async function post(path, fields) {
 export async function getToken({ user = process.env.ACCOUNTBOOK_USER, pass = process.env.ACCOUNTBOOK_PASS } = {}) {
   const text = await post("GetToken", { userName: user, userPass: pass });
   const parts = text.split(",");
-  if (parts.length !== 3 || text.startsWith("-")) throw new AccountBookError("token");
+  if (parts.length !== 3 || text.startsWith("-")) throw new AccountBookError("token", parts.length !== 3 ? text.slice(0, 200) : "");
   if (parts[2].trim() === "1") throw new AccountBookError("subscription_expired");
   return parts[0];
 }
@@ -92,6 +96,23 @@ export async function createDocument(token, doc, clientIdentifier) {
   const parsed = parseCreateResponse(text);
   if (!parsed.ok) throw new AccountBookError(`create_${parsed.codes.join("_") || "unknown"}`);
   return parsed;
+}
+
+/** GetUserCompaniesList: [{ key, value }] for the user's companies. Read-only. */
+export async function listCompanies(token) {
+  const text = await post("GetUserCompaniesList", { credentialsToken: token });
+  if (/^-\d+(\s*,\s*-\d+)*$/.test(text)) throw new AccountBookError("companies", text);
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new AccountBookError("companies_format", text.slice(0, 500));
+  }
+  const rows = Array.isArray(data) ? data : Array.isArray(data?.d) ? data.d : [data];
+  const items = rows.filter(row => row && typeof row === "object" && ("Key" in row || "key" in row))
+    .map(row => ({ key: String(row.Key ?? row.key), value: String(row.Value ?? row.value ?? "") }));
+  if (!items.length) throw new AccountBookError("companies_format", text.slice(0, 500));
+  return items;
 }
 
 export async function downloadPdf(url) {
