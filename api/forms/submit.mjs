@@ -2,6 +2,7 @@ import { getFormDefinition, visibleFields, onlyVisibleValues, isFileField, formS
 import { openFormToken, formsSecretConfigured, FormTokenError } from "../../src/forms/token.mjs";
 import { cleanFormFields, validateFormFields } from "../../src/forms/validate.mjs";
 import { renderFormPdf, formContentHash, signatureHasInk, imageDecodes, israelDateTime } from "../../src/forms/pdf.mjs";
+import { isFormSigned, fileSignedForm, unfileSignedForm, tokenHash, MSG_ALREADY_SIGNED, MSG_NOT_FILED } from "../../src/signed-forms.mjs";
 import { sendFile } from "../../src/agent4u-crm.mjs";
 import { send, readJsonBody, sendTokenError } from "../../src/forms/http.mjs";
 
@@ -76,6 +77,15 @@ export default async function handler(req, res) {
       return send(res, 400, { error: onlySignatures ? "יש לחתום בתיבת החתימה." : "יש לתקן את השדות המסומנים.", fields: errors });
     }
 
+    const filingKey = tokenHash(body.token);
+    let filingChecked = true;
+    try {
+      if (await isFormSigned(token.clientId, filingKey)) return send(res, 409, { error: MSG_ALREADY_SIGNED });
+    } catch (error) {
+      filingChecked = false;
+      console.error("Signed form check failed", error?.code || error?.name || "Error");
+    }
+
     const signedAt = new Date();
     const hash = formContentHash({ def, values, files, signedAt, workerPhone: token.workerPhone });
     const pdf = await renderFormPdf({ def, values, files, signedAt, workerPhone: token.workerPhone, hash });
@@ -83,8 +93,26 @@ export default async function handler(req, res) {
     const filename = `${safeFileName(`${def.title} ${israelDateTime(signedAt).replace(/[/:]/g, "-")}`)}.pdf`;
     const summary = formSummary(def, values);
     const prefix = def.captionPrefix || `${def.title} חתום`;
-    const caption = summary ? `${prefix}: ${summary}` : prefix;
+    // Filing comes before the send so the caption can say when it failed; a filing failure never blocks the signer.
+    let filed = null;
+    let notFiled = !filingChecked;
+    if (filingChecked) {
+      try {
+        const result = await fileSignedForm({
+          clientId: token.clientId, def, customerName: summary, values, pdf, contentHash: hash,
+          workerPhone: token.workerPhone, hash: filingKey, signedAt,
+        });
+        if (result.duplicate) return send(res, 409, { error: MSG_ALREADY_SIGNED });
+        filed = result;
+      } catch (error) {
+        notFiled = true;
+        console.error("Signed form filing failed", error?.code || error?.name || "Error");
+      }
+    }
+    const baseCaption = summary ? `${prefix}: ${summary}` : prefix;
+    const caption = notFiled ? `${baseCaption}\n${MSG_NOT_FILED}` : baseCaption;
     const sent = await sendFile(token.clientId, caption, "form-pdf", pdf, { mime: "application/pdf", filename });
+    if (!sent && filed) await unfileSignedForm({ clientId: token.clientId, hash: filingKey, path: filed.path });
     if (!sent) return send(res, 502, { error: "הטופס נחתם אך השליחה נכשלה. נסו שוב בעוד רגע." });
 
     return send(res, 200, { ok: true, filename, pdf_base64: Buffer.from(pdf).toString("base64") });

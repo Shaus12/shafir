@@ -77,6 +77,28 @@ const MIGRATIONS = [
       `ALTER TABLE app.supplier_document_items ENABLE ROW LEVEL SECURITY`,
     ],
   },
+  {
+    version: 2,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS app.signed_forms (
+        id bigserial PRIMARY KEY,
+        client_id text NOT NULL,
+        form_id text NOT NULL,
+        form_title text NOT NULL,
+        customer_name text NOT NULL DEFAULT '',
+        customer_name_normalized text NOT NULL DEFAULT '',
+        fields jsonb NOT NULL DEFAULT '{}'::jsonb,
+        storage_path text NOT NULL,
+        content_hash text NOT NULL,
+        worker_phone text,
+        token_hash text NOT NULL,
+        signed_at timestamptz NOT NULL DEFAULT now()
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS signed_forms_token ON app.signed_forms (client_id, token_hash)`,
+      `CREATE INDEX IF NOT EXISTS signed_forms_by_client ON app.signed_forms (client_id, form_id, signed_at DESC)`,
+      `ALTER TABLE app.signed_forms ENABLE ROW LEVEL SECURITY`,
+    ],
+  },
 ];
 
 let ready;

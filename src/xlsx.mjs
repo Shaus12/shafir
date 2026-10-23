@@ -250,6 +250,66 @@ function zip(files) {
   return new Blob([...localParts, ...centralParts, end.bytes], { type: MIME });
 }
 
+const sheetNameOf = (name, used) => {
+  const base = String(name || "גיליון").replace(/[\\/?*\[\]:]/g, " ").replace(/\s+/g, " ").trim().slice(0, 28) || "גיליון";
+  let candidate = base;
+  for (let n = 2; used.has(candidate); n++) candidate = `${base.slice(0, 26)} ${n}`;
+  used.add(candidate);
+  return candidate;
+};
+
+function tableWorksheet({ headers, rows }) {
+  const cell = (rowNumber, index, value, style) => textCell(`${columnName(index + 1)}${rowNumber}`, value, style);
+  const sheetRows = [
+    `<row r="1" ht="22" customHeight="1">${headers.map((header, index) => cell(1, index, header, 5)).join("")}</row>`,
+    ...rows.map((values, rowIndex) => `<row r="${rowIndex + 2}">${headers.map((_, index) => cell(rowIndex + 2, index, values[index] ?? "", 6)).join("")}</row>`),
+  ];
+  const cols = headers.map((_, index) => `<col min="${index + 1}" max="${index + 1}" width="${index < 2 ? 18 : 22}" customWidth="1"/>`).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews><sheetView workbookViewId="0" rightToLeft="1"><pane ySplit="1" topLeftCell="A2" activePane="bottomRight" state="frozen"/></sheetView></sheetViews>
+  <sheetFormatPr defaultRowHeight="18"/>
+  <cols>${cols}</cols>
+  <sheetData>${sheetRows.join("")}</sheetData>
+</worksheet>`;
+}
+
+/**
+ * A right-to-left workbook of plain tables: sheets = [{ name, headers: [text], rows: [[text]] }], one sheet each.
+ * Every value is written as text.
+ */
+export function tableToXlsx(sheets) {
+  const used = new Set();
+  const named = sheets.map(sheet => ({ ...sheet, name: sheetNameOf(sheet.name, used) }));
+  const files = [
+    ["[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  ${named.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("\n  ")}
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>`],
+    ["_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`],
+    ["xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <bookViews><workbookView/></bookViews>
+  <sheets>${named.map((sheet, index) => `<sheet name="${xml(sheet.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join("")}</sheets>
+</workbook>`],
+    ["xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  ${named.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join("\n  ")}
+  <Relationship Id="rId${named.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`],
+    ...named.map((sheet, index) => [`xl/worksheets/sheet${index + 1}.xml`, tableWorksheet(sheet)]),
+    ["xl/styles.xml", styles],
+  ];
+  return zip(files);
+}
+
 /** Create a right-to-left Excel workbook. Price-less workbooks contain no price columns or totals. */
 export function quoteToXlsx(q, { prices }) {
   return zip(workbookFiles(q, prices));

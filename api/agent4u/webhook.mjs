@@ -5,6 +5,10 @@ import { wantsSkn, isSknOnlyRequest, findLastItems, historyFrom, withoutHistory,
 import { isInvoiceRequest, extractInvoice, invoiceTemplate } from "../../src/invoice/extract.mjs";
 import { sealInvoiceToken } from "../../src/invoice/service.mjs";
 import { saveSingleDocument, saveFileDocuments, listOpenNotesReply, isSavedType, MSG_SAVE_FAILED, OPEN_NOTES_COMMAND } from "../../src/supplier-store.mjs";
+import {
+  findSignedForms, foundFormsReply, downloadFormPdf, exportSignedFormsXlsx, exportMonth, storageConfigured,
+  MSG_NO_FORMS_FOUND, FIND_FORMS_COMMAND, EXPORT_FORMS_COMMAND, MAX_FOUND_SENT,
+} from "../../src/signed-forms.mjs";
 import { dbConfigured, logDbError } from "../../src/db.mjs";
 import { quoteToSkn } from "../../src/skn/model.mjs";
 import { quoteToXlsx, XLSX_MIME } from "../../src/xlsx.mjs";
@@ -51,6 +55,8 @@ const VOICE_PROCESS_ERROR = "לא הצלחנו לעבד את ההקלטה כרג
 const HELP_MESSAGE = `שלום! אפשר לשלוח לי:
 - תיאור עבודה בטקסט או בהקלטה (למשל: "צביעה 40 מ"ר, שני שקעים") ואחזיר סעיפים וקובץ אקסל. לקובץ SKN לבינארית כתבו בסוף: לבינארית.
 - צילום או PDF של חשבונית, קבלה או תעודת משלוח, ואחזיר את הפרטים שזיהיתי. תעודות משלוח וחשבוניות נשמרות, וחשבונית מותאמת לתעודות הפתוחות של הספק.
+- "טפסים של <שם לקוח>": אחזיר את הטפסים החתומים של הלקוח ואשלח את החדשים ביותר.
+- "ייצוא טפסים" (אפשר להוסיף חודש, למשל 10/2026): קובץ אקסל של הטפסים החתומים.
 - "תעודות פתוחות": רשימת תעודות המשלוח שממתינות לחשבונית.${FORM_DEFINITIONS
   .filter(def => def.example)
   .map(def => `\n- טופס לחתימה: ${def.example}, ואשלח קישור לחתימה. לקישור ריק כתבו "${def.triggers[0]} ריק".`)
@@ -66,6 +72,7 @@ const DOC_PROCESS_ERROR = "לא הצלחנו לקרוא את המסמך כרגע
 const DOC_NONE_FOUND = "לא זוהה מסמך ספק בקובץ. נסו לצלם שוב, ישר ובתאורה טובה.";
 const SINGLE_MESSAGE_LIMIT = 1500;
 const FORM_ERROR = "לא הצלחנו ליצור את הטופס כרגע. נסו שוב.";
+const FORMS_FILE_ERROR = "לא הצלחנו לקרוא את הטפסים כרגע. נסו שוב.";
 const OPEN_NOTES_ERROR = "לא הצלחנו לקרוא את התעודות הפתוחות כרגע. נסו שוב.";
 const INVOICE_ERROR = "לא הצלחנו להכין את החשבונית כרגע. נסו שוב.";
 const FORM_TEMPLATE_REPLY = "העתיקו את ההודעה הבאה, מלאו ושלחו. מה שלא תמלאו, הלקוח ישלים בטופס.";
@@ -506,6 +513,19 @@ async function downloadDocument(mediaId) {
   return { bytes };
 }
 
+/** The newest found forms as PDFs, oldest of them first so the newest arrives last. */
+async function sendFoundForms(clientId, rows) {
+  for (const row of [...rows].reverse()) {
+    try {
+      const bytes = await downloadFormPdf(row.storage_path);
+      const label = `${row.form_title} ${row.customer_name} ${row.date_text}`.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+      await sendFile(clientId, `${row.form_title}: ${row.customer_name}`, "form-pdf", bytes, { mime: "application/pdf", filename: `${label}.pdf` });
+    } catch (error) {
+      console.error("Signed form send failed", error?.code || error?.name || "Error");
+    }
+  }
+}
+
 async function sendSplit(clientId, first, second) {
   const combined = second ? `${first}\n\n${second}` : first;
   if (!second || combined.length <= SINGLE_MESSAGE_LIMIT) return sendToWorker(clientId, combined);
@@ -669,6 +689,34 @@ export default async function handler(req, res) {
 
   if (!messageText) {
     return send(res, 200, { reply: "כרגע ניתן לשלוח הודעות טקסט בלבד." });
+  }
+
+  const findForms = FIND_FORMS_COMMAND.exec(messageText);
+  const exportForms = findForms ? null : EXPORT_FORMS_COMMAND.exec(messageText);
+  if (findForms || exportForms) {
+    const clientId = payload.client?.id;
+    if (clientId === undefined || clientId === null || clientId === "" || !dbConfigured() || !process.env.AGENT4U_API_KEY) {
+      return send(res, 200, { reply: FORMS_FILE_ERROR });
+    }
+    try {
+      if (findForms) {
+        const rows = await findSignedForms(clientId, findForms[1]);
+        if (!rows.length) return send(res, 200, { reply: MSG_NO_FORMS_FOUND });
+        if (storageConfigured()) waitUntil(sendFoundForms(clientId, rows.slice(0, MAX_FOUND_SENT)));
+        return send(res, 200, { reply: foundFormsReply(rows) });
+      }
+      const month = exportMonth(exportForms[1], exportForms[2]);
+      if (!month) return send(res, 200, { reply: 'כתבו "ייצוא טפסים" או "ייצוא טפסים 10/2026".' });
+      const bytes = await exportSignedFormsXlsx(clientId, month);
+      if (!bytes) return send(res, 200, { reply: "לא נמצאו טפסים לייצוא." });
+      waitUntil(sendFile(clientId, `ייצוא טפסים${month.label ? ` ${month.label}` : ""}`, "xlsx", bytes, {
+        mime: XLSX_MIME, filename: `ייצוא-טפסים${month.label ? `-${month.label.replace("/", "-")}` : ""}.xlsx`,
+      }));
+      return send(res, 200, { reply: "מכין את קובץ הייצוא..." });
+    } catch (error) {
+      logDbError("Signed forms command failed", error);
+      return send(res, 200, { reply: FORMS_FILE_ERROR });
+    }
   }
 
   if (OPEN_NOTES_COMMAND.test(messageText)) {

@@ -110,11 +110,12 @@ const near = (a, b, tolerance) => Math.abs(a - b) <= tolerance;
 /** Arithmetic and completeness checks. Returns Hebrew warnings for the worker. */
 export function validateDocument(doc) {
   const warnings = [];
+  const isDeliveryNote = doc.doc_type === "delivery_note";
   const missing = [
     ["supplier_name", "שם הספק"],
     ["doc_number", "מספר המסמך"],
     ["date", "תאריך"],
-    ["total", "סה\"כ לתשלום"],
+    ...(isDeliveryNote ? [] : [["total", "סה\"כ לתשלום"]]),
   ].filter(([key]) => doc[key] === null).map(([, label]) => label);
   if (missing.length) warnings.push(`לא זוהו: ${missing.join(", ")}.`);
 
@@ -134,7 +135,7 @@ export function validateDocument(doc) {
   const tolerance = 0.05 + 0.01 * lines.length;
   const withoutTotal = lines.filter(line => line.line_total === null).length;
   if (lines.length && withoutTotal) {
-    warnings.push(`ל-${withoutTotal} שורות חסר סכום שורה, לא ניתן לבדוק את סכום הפריטים.`);
+    if (!isDeliveryNote) warnings.push(`ל-${withoutTotal} שורות חסר סכום שורה, לא ניתן לבדוק את סכום הפריטים.`);
   } else if (lines.length) {
     const sum = round2(lines.reduce((acc, line) => acc + line.line_total, 0));
     if (doc.subtotal !== null) {
@@ -296,6 +297,10 @@ function shorten(text, max) {
 
 /** The Hebrew WhatsApp message for an extracted document. */
 export function formatDocumentReply(doc) {
+  // A delivery note without any price or total is shown by quantity only.
+  const quantityOnly = doc.doc_type === "delivery_note"
+    && doc.subtotal === null && doc.vat === null && doc.total === null
+    && doc.line_items.every(item => item.unit_price === null && item.line_total === null);
   const supplier = doc.supplier_name
     ? `${doc.supplier_name}${doc.supplier_id ? ` (ח.פ/ע.מ ${doc.supplier_id})` : ""}`
     : (doc.supplier_id ? `${NOT_FOUND} (ח.פ/ע.מ ${doc.supplier_id})` : NOT_FOUND);
@@ -315,13 +320,17 @@ export function formatDocumentReply(doc) {
       const quantity = item.quantity === null
         ? NOT_FOUND
         : `${quantityFormat.format(item.quantity)}${item.unit ? ` ${item.unit}` : ""}`;
+      if (quantityOnly) {
+        lines.push(`• ${shorten(item.description || NOT_FOUND, 80)} | כמות: ${quantity}`);
+        continue;
+      }
       lines.push(`• ${shorten(item.description || NOT_FOUND, 80)} | כמות: ${quantity} | מחיר: ${money(item.unit_price, doc.currency)} | סה"כ: ${money(item.line_total, doc.currency)}`);
     }
     const hidden = doc.line_items.length - MAX_ITEMS_SHOWN;
     if (hidden > 0) lines.push(`ועוד ${hidden} פריטים`);
   }
 
-  lines.push(
+  if (!quantityOnly) lines.push(
     "",
     `*לפני מע"מ:* ${money(doc.subtotal, doc.currency)}`,
     `*מע"מ:* ${money(doc.vat, doc.currency)}`,

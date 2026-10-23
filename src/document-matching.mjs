@@ -6,7 +6,7 @@ const MAX_LINES_PER_SECTION = 15;
 
 export function normalizeDescription(text) {
   if (!text) return "";
-  return String(text).normalize("NFKC").toLowerCase().replace(/\p{P}+/gu, " ").replace(/\s+/g, " ").trim();
+  return String(text).normalize("NFKC").toLowerCase().replace(/["'״׳]/g, "").replace(/\p{P}+/gu, " ").replace(/\s+/g, " ").trim();
 }
 
 export function normalizeSku(sku) {
