@@ -12,7 +12,7 @@ export default async function handler(req, res) {
     const result = await approveInvoice(body.token, body.code);
     return send(res, 200, result.dryRun
       ? { dry_run: true, title: "מצב בדיקה – לא הופקה חשבונית", document_json: result.json }
-      : { dry_run: false, doc_number: result.docNumber });
+      : { dry_run: false, outcome: result.outcome, message: result.message, doc_number: result.docNumber, codes: result.codes });
   } catch (error) {
     if (error?.name === "InvoiceError") return send(res, error.status, { error: error.message });
     if (sendTokenError(res, error)) return;

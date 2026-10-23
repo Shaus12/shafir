@@ -80,7 +80,7 @@ export async function findExistingDocument(token, clientIdentifier) {
   const parsed = parseCreateResponse(text);
   if (parsed.ok) return parsed;
   if (NOT_FOUND.has(text) || parsed.codes.some(code => NOT_FOUND.has(code))) return null;
-  throw new AccountBookError(`lookup_${parsed.codes.join("_") || "unknown"}`);
+  throw new AccountBookError(`lookup_${parsed.codes.join("_") || "unknown"}`, parsed.codes.join(", "));
 }
 
 export async function createDocument(token, doc, clientIdentifier) {
@@ -94,7 +94,7 @@ export async function createDocument(token, doc, clientIdentifier) {
     clientIdentifier,
   });
   const parsed = parseCreateResponse(text);
-  if (!parsed.ok) throw new AccountBookError(`create_${parsed.codes.join("_") || "unknown"}`);
+  if (!parsed.ok) throw new AccountBookError(`create_${parsed.codes.join("_") || "unknown"}`, parsed.codes.join(", "));
   return parsed;
 }
 

@@ -13,6 +13,11 @@ import { accountBookLive, getToken, findExistingDocument, createDocument, listCo
 export const DRY_RUN_TITLE = "מצב בדיקה – לא הופקה חשבונית";
 export const MAX_WRONG_CODES = 5;
 
+const MSG_FAILED = "❌ החשבונית לא הופקה. לא נוצר שום מסמך. שלחו צילום של ההודעה הזו לצוות התמיכה.";
+const MSG_UNCLEAR = "⚠️ לא ברור אם החשבונית כבר הופקה. בדקו ב-AccountBook לפני שמנסים שוב.";
+const msgCreated = number => `✅ החשבונית הופקה. מספר: ${number}`;
+const msgCreatedNoPdf = number => `✅ החשבונית הופקה. מספר: ${number}. את הקובץ אפשר למצוא ב-AccountBook.`;
+
 export class InvoiceError extends Error {
   constructor(status, message) {
     super(message);
@@ -42,6 +47,7 @@ const dryRunMode = () => !accountBookLive();
 
 /** Dry-run helper: the user's companies, so the right ACCOUNTBOOK_ESEK_NUM can be chosen. Never creates a document. */
 async function companiesForDryRun() {
+  if (/^\d+$/.test(String(process.env.ACCOUNTBOOK_ESEK_NUM ?? "").trim())) return undefined;
   const missing = ["ACCOUNTBOOK_USER", "ACCOUNTBOOK_PASS"].filter(name => !String(process.env[name] ?? "").trim());
   if (missing.length) {
     console.error("AccountBook credentials not set in this environment:", missing.join(", "));
@@ -82,7 +88,10 @@ async function notifyWorker(clientId, text, pdf) {
   return sent;
 }
 
-/** Check the code, then create (or find) the document. Returns { dryRun, json } or { dryRun: false, docNumber }. */
+/**
+ * Check the code, then create (or find) the document. Returns { dryRun: true, json } or
+ * { dryRun: false, outcome: "created" | "created_no_pdf" | "failed" | "unclear", message, docNumber?, codes? }.
+ */
 export async function approveInvoice(token, code) {
   const opened = open(token);
   const invoice = invoiceFrom(opened);
@@ -111,21 +120,35 @@ export async function approveInvoice(token, code) {
   inFlight.add(key);
   try {
     const identifier = clientIdentifierFor(token);
-    const session = await getToken();
-    const result = (await findExistingDocument(session, identifier)) ?? (await createDocument(session, doc, identifier));
+    // "stage" tells whether a failure leaves it unknown if a document exists: the lookup failed, or the
+    // create call got no answer (network / HTTP), so nothing can be said about the document.
+    let stage = "token";
+    let result;
+    try {
+      const session = await getToken();
+      stage = "lookup";
+      result = await findExistingDocument(session, identifier);
+      if (!result) {
+        stage = "create";
+        result = await createDocument(session, doc, identifier);
+      }
+    } catch (error) {
+      if (error?.name !== "AccountBookError") throw error;
+      console.error("AccountBook invoice failed", error.code);
+      const unknown = stage === "lookup" || (stage === "create" && /^(network|http_)/.test(error.code));
+      const codes = error.detail || error.code;
+      const message = unknown ? MSG_UNCLEAR : MSG_FAILED;
+      await notifyWorker(opened.clientId, `${message}\n\n${codes}`);
+      return { dryRun: false, outcome: unknown ? "unclear" : "failed", message, codes };
+    }
     const pdfBytes = await downloadPdf(result.pdfUrl);
+    const message = pdfBytes ? msgCreated(result.docNumber) : msgCreatedNoPdf(result.docNumber);
     await notifyWorker(
       opened.clientId,
-      `חשבונית מס מספר ${result.docNumber} הופקה.${pdfBytes ? "" : " לא הצלחנו לצרף את קובץ ה-PDF, ניתן להוריד אותו מ-AccountBook."}`,
+      message,
       pdfBytes && { bytes: pdfBytes, filename: `חשבונית-מס-${result.docNumber}.pdf`, caption: `חשבונית מס ${result.docNumber}` },
     );
-    return { dryRun: false, docNumber: result.docNumber };
-  } catch (error) {
-    if (error?.name === "AccountBookError") {
-      console.error("AccountBook invoice failed", error.code);
-      throw new InvoiceError(502, "לא הצלחנו להפיק את החשבונית כרגע. נסו שוב.");
-    }
-    throw error;
+    return { dryRun: false, outcome: pdfBytes ? "created" : "created_no_pdf", message, docNumber: result.docNumber };
   } finally {
     inFlight.delete(key);
   }

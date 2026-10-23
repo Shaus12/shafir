@@ -29,7 +29,8 @@ button:disabled{opacity:.6;cursor:default}
 .msg{margin-top:10px;font-weight:600}.err{color:var(--danger)}.ok{color:var(--ok)}
 .banner{border:1px solid var(--warn);color:var(--warn);border-radius:10px;padding:10px;font-weight:700;text-align:center}
 pre{direction:ltr;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere;font-size:.8rem;background:#f0f2f1;padding:10px;border-radius:10px}
-.big{font-size:1.4rem;font-weight:700;text-align:center}
+.big{font-size:1.25rem;font-weight:700;text-align:center}
+.small{font-size:.8rem;color:var(--muted);text-align:center;direction:ltr;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -98,7 +99,8 @@ $("form").addEventListener("submit", async e => {
     if (r.dry_run) {
       box.append(text("div", r.title, "banner"), text("p", "המסמך שהיה נשלח ל-AccountBook:"), text("pre", r.document_json));
     } else {
-      box.append(text("p", "החשבונית הופקה", "msg ok"), text("div", `חשבונית מס מספר ${r.doc_number}`, "big"), text("p", "המסמך נשלח אליכם ב-WhatsApp."));
+      box.append(text("div", r.message, "big"));
+      if (r.codes) box.append(text("p", r.codes, "small"));
     }
     box.hidden = false;
   } catch (err) {
