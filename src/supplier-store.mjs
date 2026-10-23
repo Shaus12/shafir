@@ -3,6 +3,7 @@
 // Every query filters by client_id. Callers catch errors; nothing here logs values.
 
 import { getDb } from "./db.mjs";
+import { applyPricesSafely } from "./supplier-prices.mjs";
 import { matchDocuments, formatMatchReport, normalizeDescription, normalizeDocNumber } from "./document-matching.mjs";
 
 export const MSG_DUPLICATE = "המסמך הזה כבר נשמר בעבר.";
@@ -92,6 +93,7 @@ export async function saveSingleDocument({ clientId, senderPhone, doc }) {
     if (doc.doc_type === "delivery_note") return { note: MSG_SAVED_WAITING, report: "" };
 
     const k = keysOf(doc);
+    const prices = await applyPricesSafely(tx, { clientId, invoiceId: saved.id, doc, supplierKey: k.supplierKey });
     const candidates = k.supplierKey
       ? await tx`
           SELECT id, doc_number, currency, created_at FROM app.supplier_documents
@@ -109,12 +111,12 @@ export async function saveSingleDocument({ clientId, senderPhone, doc }) {
 
     if (!used.length) {
       const missing = doc.referenced_delivery_notes;
-      return { note: [MSG_NO_OPEN_NOTES, ...(missing.length ? [`תעודות שמופיעות בחשבונית ולא נמצאו: ${missing.join(", ")}`] : [])].join("\n"), report: "" };
+      return { note: [MSG_NO_OPEN_NOTES, ...(missing.length ? [`תעודות שמופיעות בחשבונית ולא נמצאו: ${missing.join(", ")}`] : [])].join("\n"), report: "", prices };
     }
     const notes = await loadNotes(tx, clientId, used);
     const result = matchDocuments([doc, ...notes]);
     await markMatched(tx, clientId, notes.map(note => note.id), saved.id, result);
-    return { note: "", report: formatMatchReport(result) };
+    return { note: "", report: formatMatchReport(result), prices };
   });
 }
 
@@ -127,19 +129,24 @@ export async function saveFileDocuments({ clientId, senderPhone, documents, matc
   const sql = await getDb();
   return sql.begin(async tx => {
     const lines = [];
+    const priceBlocks = [];
     const saved = [];
     for (const [index, doc] of documents.entries()) {
       if (!isSavedType(doc.doc_type)) continue;
       const result = await insertDocument(tx, clientId, senderPhone, doc);
       saved.push({ doc, ...result });
       if (result.duplicate) lines.push(`• מסמך ${index + 1}: ${MSG_DUPLICATE}`);
+      else if (doc.doc_type === "invoice") {
+        const prices = await applyPricesSafely(tx, { clientId, invoiceId: result.id, doc, supplierKey: keysOf(doc).supplierKey });
+        if (prices) priceBlocks.push(prices);
+      }
     }
     const invoice = saved.find(entry => entry.doc.doc_type === "invoice");
     const noteIds = saved.filter(entry => entry.doc.doc_type === "delivery_note" && entry.id !== null).map(entry => entry.id);
     if (matchResult?.applicable && invoice && !invoice.duplicate && invoice.id !== null) {
       await markMatched(tx, clientId, noteIds, invoice.id, matchResult);
     }
-    return lines;
+    return [...lines, ...priceBlocks];
   });
 }
 

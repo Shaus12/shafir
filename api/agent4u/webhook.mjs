@@ -9,6 +9,7 @@ import {
   findSignedForms, foundFormsReply, downloadFormPdf, exportSignedFormsXlsx, exportMonth, storageConfigured,
   MSG_NO_FORMS_FOUND, FIND_FORMS_COMMAND, EXPORT_FORMS_COMMAND, MAX_FOUND_SENT,
 } from "../../src/signed-forms.mjs";
+import { parsePriceCommand, decidePriceChanges, searchPricesReply, openPriceChangesReply, isPriceApprover } from "../../src/supplier-prices.mjs";
 import { dbConfigured, logDbError } from "../../src/db.mjs";
 import { quoteToSkn } from "../../src/skn/model.mjs";
 import { quoteToXlsx, XLSX_MIME } from "../../src/xlsx.mjs";
@@ -58,6 +59,8 @@ const HELP_MESSAGE = `שלום! אפשר לשלוח לי:
 - צילום או PDF של חשבונית, קבלה או תעודת משלוח, ואחזיר את הפרטים שזיהיתי. תעודות משלוח וחשבוניות נשמרות, וחשבונית מותאמת לתעודות הפתוחות של הספק.
 - "טפסים של <שם לקוח>": אחזיר את הטפסים החתומים של הלקוח ואשלח את החדשים ביותר.
 - "ייצוא טפסים" (אפשר להוסיף חודש, למשל 10/2026): קובץ אקסל של הטפסים החתומים.
+- "מחיר <פריט או מק"ט>": המחיר האחרון אצל הספקים.
+- "חריגות פתוחות": שינויי מחיר שממתינים לאישור. לאישור: "אשר <מספר>", "דחה <מספר>" או "אשר הכל".
 - "תעודות פתוחות": רשימת תעודות המשלוח שממתינות לחשבונית.${FORM_DEFINITIONS
   .filter(def => def.example)
   .map(def => `\n- טופס לחתימה: ${def.example}, ואשלח קישור לחתימה. לקישור ריק כתבו "${def.triggers[0]} ריק".`)
@@ -75,6 +78,7 @@ const SINGLE_MESSAGE_LIMIT = 1500;
 const FORM_ERROR = "לא הצלחנו ליצור את הטופס כרגע. נסו שוב.";
 const FORMS_FILE_ERROR = "לא הצלחנו לקרוא את הטפסים כרגע. נסו שוב.";
 const VOICE_TEXT_ONLY = "את הפעולה הזו אפשר לבקש בהודעת טקסט. שלחו אותה בכתב.";
+const PRICES_ERROR = "לא הצלחנו לקרוא את המחירון כרגע. נסו שוב.";
 const OPEN_NOTES_ERROR = "לא הצלחנו לקרוא את התעודות הפתוחות כרגע. נסו שוב.";
 const INVOICE_ERROR = "לא הצלחנו להכין את החשבונית כרגע. נסו שוב.";
 const FORM_TEMPLATE_REPLY = "העתיקו את ההודעה הבאה, מלאו ושלחו. מה שלא תמלאו, הלקוח ישלים בטופס.";
@@ -462,6 +466,19 @@ async function sendSknFromHistory(clientId, history) {
   return sendQuoteFiles(clientId, items, { skn: true, xlsx: false });
 }
 
+/** The price command a routed action stands for, or null. */
+function routedPriceCommand(routed) {
+  const number = Number(routed?.number);
+  switch (routed?.action) {
+    case "price_approve": return { type: "approve", number };
+    case "price_reject": return { type: "reject", number };
+    case "price_approve_all": return { type: "approve_all" };
+    case "price_search": return { type: "search", query: routed.query };
+    case "open_price_changes": return { type: "open" };
+    default: return null;
+  }
+}
+
 /** The router's choice for a message that matched no exact command, or null when the call fails. */
 async function routeText(text, history) {
   try {
@@ -581,7 +598,7 @@ async function processDocument(mediaId, clientId, senderPhone = "") {
       } catch (error) {
         logDbError("Supplier document save failed", error);
       }
-      return sendSplit(clientId, reply, [stored.report, stored.note].filter(Boolean).join("\n\n"));
+      return sendSplit(clientId, reply, [stored.report, stored.note, stored.prices].filter(Boolean).join("\n\n"));
     }
 
     const list = [`זוהו ${documents.length} מסמכים בקובץ:`, ...documents.map(formatDocumentListLine)].join("\n");
@@ -596,7 +613,7 @@ async function processDocument(mediaId, clientId, senderPhone = "") {
         saveLines = [MSG_SAVE_FAILED];
       }
     }
-    const report = [formatMatchReport(matchResult), formatDocumentWarnings(documents), saveLines.join("\n")].filter(Boolean).join("\n\n");
+    const report = [formatMatchReport(matchResult), formatDocumentWarnings(documents), saveLines.join("\n\n")].filter(Boolean).join("\n\n");
     const combined = `${list}\n\n${report}`;
     if (combined.length <= SINGLE_MESSAGE_LIMIT) return sendToWorker(clientId, combined);
     await sendToWorker(clientId, list);
@@ -722,7 +739,7 @@ export default async function handler(req, res) {
 
   // Natural language: only when the message matches no exact command or trigger.
   const isExactCommand = FIND_FORMS_COMMAND.test(messageText) || EXPORT_FORMS_COMMAND.test(messageText)
-    || OPEN_NOTES_COMMAND.test(messageText) || isSknOnlyRequest(messageText)
+    || OPEN_NOTES_COMMAND.test(messageText) || Boolean(parsePriceCommand(messageText)) || isSknOnlyRequest(messageText)
     || isInvoiceRequest(messageText) || Boolean(findFormByTrigger(messageText));
   const routed = isExactCommand || !process.env.OPENAI_API_KEY ? null : await routeText(messageText, history);
   if (routed?.action === "help") return send(res, 200, { reply: HELP_MESSAGE });
@@ -755,6 +772,27 @@ export default async function handler(req, res) {
     } catch (error) {
       logDbError("Signed forms command failed", error);
       return send(res, 200, { reply: FORMS_FILE_ERROR });
+    }
+  }
+
+  const priceCommand = parsePriceCommand(messageText) || routedPriceCommand(routed);
+  if (priceCommand) {
+    const clientId = payload.client?.id;
+    if (clientId === undefined || clientId === null || clientId === "" || !dbConfigured()) {
+      return send(res, 200, { reply: PRICES_ERROR });
+    }
+    try {
+      const phone = normalizePhone(senderPhone);
+      const reply = priceCommand.type === "search" ? await searchPricesReply(clientId, priceCommand.query)
+        : priceCommand.type === "open" ? await openPriceChangesReply(clientId)
+        : await decidePriceChanges({
+          clientId, command: priceCommand, phone,
+          allowed: isPriceApprover(phone, normalizePhone(process.env.PRICE_APPROVER_PHONE)),
+        });
+      return send(res, 200, { reply });
+    } catch (error) {
+      logDbError("Price command failed", error);
+      return send(res, 200, { reply: PRICES_ERROR });
     }
   }
 

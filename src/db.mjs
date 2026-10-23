@@ -99,6 +99,51 @@ const MIGRATIONS = [
       `ALTER TABLE app.signed_forms ENABLE ROW LEVEL SECURITY`,
     ],
   },
+  {
+    version: 3,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS app.supplier_prices (
+        id bigserial PRIMARY KEY,
+        client_id text NOT NULL,
+        supplier_key text NOT NULL,
+        supplier_name text,
+        item_key text NOT NULL,
+        sku text,
+        description text,
+        description_key text NOT NULL DEFAULT '',
+        unit text,
+        currency text,
+        price numeric NOT NULL,
+        source text NOT NULL DEFAULT 'invoice' CHECK (source IN ('invoice', 'manual')),
+        last_invoice_id bigint REFERENCES app.supplier_documents (id) ON DELETE SET NULL,
+        last_date date,
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (client_id, supplier_key, item_key)
+      )`,
+      // id is the short per-client number used in commands ("אשר 12"), allocated under an advisory lock.
+      `CREATE TABLE IF NOT EXISTS app.price_changes (
+        client_id text NOT NULL,
+        id integer NOT NULL,
+        supplier_key text NOT NULL,
+        item_key text NOT NULL,
+        old_price numeric NOT NULL,
+        new_price numeric NOT NULL,
+        new_unit text,
+        percent numeric,
+        note text,
+        invoice_id bigint REFERENCES app.supplier_documents (id) ON DELETE SET NULL,
+        status text NOT NULL CHECK (status IN ('auto', 'pending', 'approved', 'rejected')),
+        decided_by_phone text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        decided_at timestamptz,
+        PRIMARY KEY (client_id, id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS supplier_prices_search ON app.supplier_prices (client_id, updated_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS price_changes_pending ON app.price_changes (client_id, status, id)`,
+      `ALTER TABLE app.supplier_prices ENABLE ROW LEVEL SECURITY`,
+      `ALTER TABLE app.price_changes ENABLE ROW LEVEL SECURITY`,
+    ],
+  },
 ];
 
 let ready;
