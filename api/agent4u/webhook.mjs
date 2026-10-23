@@ -4,6 +4,8 @@ import { extractProposedItems, formatProposedItemsReply, SUBCHAPTER_MAP } from "
 import { wantsSkn, isSknOnlyRequest, findLastItems, historyFrom, withoutHistory, SKN_HINT, NO_RECENT_ITEMS } from "../../src/items-history.mjs";
 import { isInvoiceRequest, extractInvoice, invoiceTemplate } from "../../src/invoice/extract.mjs";
 import { sealInvoiceToken } from "../../src/invoice/service.mjs";
+import { saveSingleDocument, saveFileDocuments, listOpenNotesReply, isSavedType, MSG_SAVE_FAILED, OPEN_NOTES_COMMAND } from "../../src/supplier-store.mjs";
+import { dbConfigured, logDbError } from "../../src/db.mjs";
 import { quoteToSkn } from "../../src/skn/model.mjs";
 import { quoteToXlsx, XLSX_MIME } from "../../src/xlsx.mjs";
 import {
@@ -48,7 +50,8 @@ const VOICE_PROCESS_ERROR = "לא הצלחנו לעבד את ההקלטה כרג
 
 const HELP_MESSAGE = `שלום! אפשר לשלוח לי:
 - תיאור עבודה בטקסט או בהקלטה (למשל: "צביעה 40 מ"ר, שני שקעים") ואחזיר סעיפים וקובץ אקסל. לקובץ SKN לבינארית כתבו בסוף: לבינארית.
-- צילום או PDF של חשבונית, קבלה או תעודת משלוח, ואחזיר את הפרטים שזיהיתי.${FORM_DEFINITIONS
+- צילום או PDF של חשבונית, קבלה או תעודת משלוח, ואחזיר את הפרטים שזיהיתי. תעודות משלוח וחשבוניות נשמרות, וחשבונית מותאמת לתעודות הפתוחות של הספק.
+- "תעודות פתוחות": רשימת תעודות המשלוח שממתינות לחשבונית.${FORM_DEFINITIONS
   .filter(def => def.example)
   .map(def => `\n- טופס לחתימה: ${def.example}, ואשלח קישור לחתימה. לקישור ריק כתבו "${def.triggers[0]} ריק".`)
   .join("")}
@@ -63,6 +66,7 @@ const DOC_PROCESS_ERROR = "לא הצלחנו לקרוא את המסמך כרגע
 const DOC_NONE_FOUND = "לא זוהה מסמך ספק בקובץ. נסו לצלם שוב, ישר ובתאורה טובה.";
 const SINGLE_MESSAGE_LIMIT = 1500;
 const FORM_ERROR = "לא הצלחנו ליצור את הטופס כרגע. נסו שוב.";
+const OPEN_NOTES_ERROR = "לא הצלחנו לקרוא את התעודות הפתוחות כרגע. נסו שוב.";
 const INVOICE_ERROR = "לא הצלחנו להכין את החשבונית כרגע. נסו שוב.";
 const FORM_TEMPLATE_REPLY = "העתיקו את ההודעה הבאה, מלאו ושלחו. מה שלא תמלאו, הלקוח ישלים בטופס.";
 const TEMPLATE_DELAY_MS = 1500;
@@ -502,7 +506,14 @@ async function downloadDocument(mediaId) {
   return { bytes };
 }
 
-async function processDocument(mediaId, clientId) {
+async function sendSplit(clientId, first, second) {
+  const combined = second ? `${first}\n\n${second}` : first;
+  if (!second || combined.length <= SINGLE_MESSAGE_LIMIT) return sendToWorker(clientId, combined);
+  await sendToWorker(clientId, first);
+  return sendToWorker(clientId, second);
+}
+
+async function processDocument(mediaId, clientId, senderPhone = "") {
   try {
     const download = await downloadDocument(mediaId);
     if (download.error) return sendToWorker(clientId, download.error);
@@ -510,10 +521,33 @@ async function processDocument(mediaId, clientId) {
 
     const { documents } = await extractDocuments(download.bytes);
     if (!documents.length) return sendToWorker(clientId, DOC_NONE_FOUND);
-    if (documents.length === 1) return sendToWorker(clientId, formatDocumentReply(documents[0]));
+    if (documents.length === 1) {
+      const doc = documents[0];
+      const reply = formatDocumentReply(doc);
+      if (!isSavedType(doc.doc_type)) return sendToWorker(clientId, reply);
+      let stored = { note: MSG_SAVE_FAILED, report: "" };
+      try {
+        if (!dbConfigured()) throw new Error("not configured");
+        stored = await saveSingleDocument({ clientId: String(clientId), senderPhone, doc });
+      } catch (error) {
+        logDbError("Supplier document save failed", error);
+      }
+      return sendSplit(clientId, reply, [stored.report, stored.note].filter(Boolean).join("\n\n"));
+    }
 
     const list = [`זוהו ${documents.length} מסמכים בקובץ:`, ...documents.map(formatDocumentListLine)].join("\n");
-    const report = [formatMatchReport(matchDocuments(documents)), formatDocumentWarnings(documents)].filter(Boolean).join("\n\n");
+    const matchResult = matchDocuments(documents);
+    let saveLines = [];
+    if (documents.some(doc => isSavedType(doc.doc_type))) {
+      try {
+        if (!dbConfigured()) throw new Error("not configured");
+        saveLines = await saveFileDocuments({ clientId: String(clientId), senderPhone, documents, matchResult });
+      } catch (error) {
+        logDbError("Supplier documents save failed", error);
+        saveLines = [MSG_SAVE_FAILED];
+      }
+    }
+    const report = [formatMatchReport(matchResult), formatDocumentWarnings(documents), saveLines.join("\n")].filter(Boolean).join("\n\n");
     const combined = `${list}\n\n${report}`;
     if (combined.length <= SINGLE_MESSAGE_LIMIT) return sendToWorker(clientId, combined);
     await sendToWorker(clientId, list);
@@ -625,7 +659,7 @@ export default async function handler(req, res) {
     if (!mediaId || clientId === undefined || clientId === null || clientId === "") {
       return send(res, 200, { reply: DOC_PROCESS_ERROR });
     }
-    waitUntil(processDocument(mediaId, clientId));
+    waitUntil(processDocument(mediaId, clientId, normalizePhone(senderPhone)));
     return send(res, 200, { reply: DOC_ACK });
   }
 
@@ -635,6 +669,19 @@ export default async function handler(req, res) {
 
   if (!messageText) {
     return send(res, 200, { reply: "כרגע ניתן לשלוח הודעות טקסט בלבד." });
+  }
+
+  if (OPEN_NOTES_COMMAND.test(messageText)) {
+    const clientId = payload.client?.id;
+    if (clientId === undefined || clientId === null || clientId === "" || !dbConfigured()) {
+      return send(res, 200, { reply: OPEN_NOTES_ERROR });
+    }
+    try {
+      return send(res, 200, { reply: await listOpenNotesReply(String(clientId)) });
+    } catch (error) {
+      logDbError("Open delivery notes failed", error);
+      return send(res, 200, { reply: OPEN_NOTES_ERROR });
+    }
   }
 
   if (isSknOnlyRequest(messageText)) {
