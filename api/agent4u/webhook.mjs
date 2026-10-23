@@ -10,6 +10,10 @@ import {
   MSG_NO_FORMS_FOUND, FIND_FORMS_COMMAND, EXPORT_FORMS_COMMAND, MAX_FOUND_SENT,
 } from "../../src/signed-forms.mjs";
 import { parsePriceCommand, decidePriceChanges, searchPricesReply, openPriceChangesReply, isPriceApprover } from "../../src/supplier-prices.mjs";
+import {
+  exportInvoicesXlsx, invoicesExportMonth, invoicesFileName,
+  EXPORT_INVOICES_COMMAND, MSG_NO_INVOICES_MONTH, MSG_BAD_INVOICES_MONTH, MSG_INVOICES_NOTE,
+} from "../../src/supplier-export.mjs";
 import { dbConfigured, logDbError } from "../../src/db.mjs";
 import { quoteToSkn } from "../../src/skn/model.mjs";
 import { quoteToXlsx, XLSX_MIME } from "../../src/xlsx.mjs";
@@ -61,6 +65,7 @@ const HELP_MESSAGE = `שלום! אפשר לשלוח לי:
 - "ייצוא טפסים" (אפשר להוסיף חודש, למשל 10/2026): קובץ אקסל של הטפסים החתומים.
 - "מחיר <פריט או מק"ט>": המחיר האחרון אצל הספקים.
 - "חריגות פתוחות": שינויי מחיר שממתינים לאישור. לאישור: "אשר <מספר>", "דחה <מספר>" או "אשר הכל".
+- "ייצוא חשבוניות" (אפשר להוסיף חודש, למשל 10/2026): קובץ אקסל של חשבוניות הספקים שנשמרו, ברירת מחדל החודש הנוכחי.
 - "תעודות פתוחות": רשימת תעודות המשלוח שממתינות לחשבונית.${FORM_DEFINITIONS
   .filter(def => def.example)
   .map(def => `\n- טופס לחתימה: ${def.example}, ואשלח קישור לחתימה. לקישור ריק כתבו "${def.triggers[0]} ריק".`)
@@ -78,6 +83,7 @@ const SINGLE_MESSAGE_LIMIT = 1500;
 const FORM_ERROR = "לא הצלחנו ליצור את הטופס כרגע. נסו שוב.";
 const FORMS_FILE_ERROR = "לא הצלחנו לקרוא את הטפסים כרגע. נסו שוב.";
 const VOICE_TEXT_ONLY = "את הפעולה הזו אפשר לבקש בהודעת טקסט. שלחו אותה בכתב.";
+const INVOICES_EXPORT_ERROR = "לא הצלחנו להכין את קובץ החשבוניות כרגע. נסו שוב.";
 const PRICES_ERROR = "לא הצלחנו לקרוא את המחירון כרגע. נסו שוב.";
 const OPEN_NOTES_ERROR = "לא הצלחנו לקרוא את התעודות הפתוחות כרגע. נסו שוב.";
 const INVOICE_ERROR = "לא הצלחנו להכין את החשבונית כרגע. נסו שוב.";
@@ -739,6 +745,7 @@ export default async function handler(req, res) {
 
   // Natural language: only when the message matches no exact command or trigger.
   const isExactCommand = FIND_FORMS_COMMAND.test(messageText) || EXPORT_FORMS_COMMAND.test(messageText)
+    || EXPORT_INVOICES_COMMAND.test(messageText)
     || OPEN_NOTES_COMMAND.test(messageText) || Boolean(parsePriceCommand(messageText)) || isSknOnlyRequest(messageText)
     || isInvoiceRequest(messageText) || Boolean(findFormByTrigger(messageText));
   const routed = isExactCommand || !process.env.OPENAI_API_KEY ? null : await routeText(messageText, history);
@@ -772,6 +779,29 @@ export default async function handler(req, res) {
     } catch (error) {
       logDbError("Signed forms command failed", error);
       return send(res, 200, { reply: FORMS_FILE_ERROR });
+    }
+  }
+
+  const exportInvoices = EXPORT_INVOICES_COMMAND.exec(messageText)
+    || (routed?.action === "export_invoices" ? [messageText, ...(routed.month ? routed.month.split("/") : [])] : null);
+  if (exportInvoices) {
+    const clientId = payload.client?.id;
+    if (clientId === undefined || clientId === null || clientId === "" || !dbConfigured() || !process.env.AGENT4U_API_KEY) {
+      return send(res, 200, { reply: INVOICES_EXPORT_ERROR });
+    }
+    try {
+      const month = invoicesExportMonth(exportInvoices[1], exportInvoices[2]);
+      if (!month) return send(res, 200, { reply: MSG_BAD_INVOICES_MONTH });
+      const bytes = await exportInvoicesXlsx(clientId, month);
+      if (!bytes) return send(res, 200, { reply: MSG_NO_INVOICES_MONTH });
+      waitUntil((async () => {
+        const sent = await sendFile(clientId, `חשבוניות ספקים ${month.label}`, "xlsx", bytes, { mime: XLSX_MIME, filename: invoicesFileName(month) });
+        if (sent) await sendToWorker(clientId, MSG_INVOICES_NOTE);
+      })());
+      return send(res, 200, { reply: "מכין את קובץ החשבוניות..." });
+    } catch (error) {
+      logDbError("Invoices export failed", error);
+      return send(res, 200, { reply: INVOICES_EXPORT_ERROR });
     }
   }
 

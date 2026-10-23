@@ -125,7 +125,7 @@ async function applyInvoicePrices(tx, { clientId, invoiceId, doc, supplierKey })
       `לאישור: "אשר ${pending[0].id}" / "דחה ${pending[0].id}" / "אשר הכל"`,
     ].join("\n"));
   }
-  if (updated) blocks.push(`עודכנו ${updated} מחירים במחירון.`);
+  if (updated) blocks.push(updated === 1 ? "עודכן מחיר אחד במחירון." : `עודכנו ${updated} מחירים במחירון.`);
   return blocks.join("\n\n");
 }
 

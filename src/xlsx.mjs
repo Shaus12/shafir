@@ -259,10 +259,22 @@ const sheetNameOf = (name, used) => {
 };
 
 function tableWorksheet({ headers, rows }) {
-  const cell = (rowNumber, index, value, style) => textCell(`${columnName(index + 1)}${rowNumber}`, value, style);
+  // A value is text, a number (written as a number cell), null/undefined (an empty cell), or { value, bold: true }.
+  const cell = (rowNumber, index, value, style) => {
+    let content = value;
+    let bold = false;
+    if (content && typeof content === "object") {
+      bold = Boolean(content.bold);
+      content = content.value;
+    }
+    if (content === null || content === undefined) return "";
+    const ref = `${columnName(index + 1)}${rowNumber}`;
+    if (typeof content === "number") return Number.isFinite(content) ? numberCell(ref, content, bold ? 8 : 7) : "";
+    return textCell(ref, content, bold ? 5 : style);
+  };
   const sheetRows = [
     `<row r="1" ht="22" customHeight="1">${headers.map((header, index) => cell(1, index, header, 5)).join("")}</row>`,
-    ...rows.map((values, rowIndex) => `<row r="${rowIndex + 2}">${headers.map((_, index) => cell(rowIndex + 2, index, values[index] ?? "", 6)).join("")}</row>`),
+    ...rows.map((values, rowIndex) => `<row r="${rowIndex + 2}">${headers.map((_, index) => cell(rowIndex + 2, index, values[index], 6)).join("")}</row>`),
   ];
   const cols = headers.map((_, index) => `<col min="${index + 1}" max="${index + 1}" width="${index < 2 ? 18 : 22}" customWidth="1"/>`).join("");
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -276,7 +288,7 @@ function tableWorksheet({ headers, rows }) {
 
 /**
  * A right-to-left workbook of plain tables: sheets = [{ name, headers: [text], rows: [[text]] }], one sheet each.
- * Every value is written as text.
+ * Values are text, numbers (real number cells), null (empty cell) or { value, bold: true }.
  */
 export function tableToXlsx(sheets) {
   const used = new Set();

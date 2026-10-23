@@ -41,7 +41,7 @@ for (const [phrase, answer] of CASES) {
 }
 
 test("every action the router can pick is in the enum, and form actions map to real forms", () => {
-  assert.equal(ROUTER_ACTIONS.length, 15);
+  assert.equal(ROUTER_ACTIONS.length, 16);
   for (const [phrase, answer] of CASES) assert.ok(ROUTER_ACTIONS.includes(answer.action), phrase);
   for (const formId of Object.values(ROUTER_FORM_IDS)) assert.ok(getFormDefinition(formId), formId);
 });

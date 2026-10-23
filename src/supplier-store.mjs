@@ -8,6 +8,7 @@ import { matchDocuments, formatMatchReport, normalizeDescription, normalizeDocNu
 
 export const MSG_DUPLICATE = "המסמך הזה כבר נשמר בעבר.";
 export const MSG_SAVED_WAITING = "נשמרה. ממתינה לחשבונית.";
+export const MSG_NO_NOTES_TO_MATCH = "אין תעודות משלוח פתוחות להתאמה.";
 export const MSG_NO_OPEN_NOTES = "לא נמצאו תעודות משלוח פתוחות מהספק הזה.";
 export const MSG_SAVE_FAILED = "לא הצלחנו לשמור את המסמך.";
 export const OPEN_NOTES_COMMAND = /^\s*תעודות\s+פתוחות[\s.!?]*$/;
@@ -111,7 +112,8 @@ export async function saveSingleDocument({ clientId, senderPhone, doc }) {
 
     if (!used.length) {
       const missing = doc.referenced_delivery_notes;
-      return { note: [MSG_NO_OPEN_NOTES, ...(missing.length ? [`תעודות שמופיעות בחשבונית ולא נמצאו: ${missing.join(", ")}`] : [])].join("\n"), report: "", prices };
+      if (!missing.length) return { note: MSG_NO_NOTES_TO_MATCH, report: "", prices };
+      return { note: [MSG_NO_OPEN_NOTES, `תעודות שמופיעות בחשבונית ולא נמצאו: ${missing.join(", ")}`].join("\n"), report: "", prices };
     }
     const notes = await loadNotes(tx, clientId, used);
     const result = matchDocuments([doc, ...notes]);
