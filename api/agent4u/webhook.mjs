@@ -22,7 +22,8 @@ import {
 } from "../../src/document-extraction.mjs";
 import { matchDocuments, formatMatchReport } from "../../src/document-matching.mjs";
 import { CRM_MEDIA_URL, sendToWorker, sendFile } from "../../src/agent4u-crm.mjs";
-import { findFormByTrigger, FORM_DEFINITIONS, visibleFields, isFileField } from "../../src/forms/definitions.mjs";
+import { routeMessage, unclearQuestion, ROUTER_FORM_IDS } from "../../src/router.mjs";
+import { findFormByTrigger, getFormDefinition, FORM_DEFINITIONS, visibleFields, isFileField } from "../../src/forms/definitions.mjs";
 import { extractFormFields } from "../../src/forms/extract.mjs";
 import { sealFormToken, formsSecretConfigured } from "../../src/forms/token.mjs";
 import { cleanFormFields } from "../../src/forms/validate.mjs";
@@ -73,6 +74,7 @@ const DOC_NONE_FOUND = "לא זוהה מסמך ספק בקובץ. נסו לצל�
 const SINGLE_MESSAGE_LIMIT = 1500;
 const FORM_ERROR = "לא הצלחנו ליצור את הטופס כרגע. נסו שוב.";
 const FORMS_FILE_ERROR = "לא הצלחנו לקרוא את הטפסים כרגע. נסו שוב.";
+const VOICE_TEXT_ONLY = "את הפעולה הזו אפשר לבקש בהודעת טקסט. שלחו אותה בכתב.";
 const OPEN_NOTES_ERROR = "לא הצלחנו לקרוא את התעודות הפתוחות כרגע. נסו שוב.";
 const INVOICE_ERROR = "לא הצלחנו להכין את החשבונית כרגע. נסו שוב.";
 const FORM_TEMPLATE_REPLY = "העתיקו את ההודעה הבאה, מלאו ושלחו. מה שלא תמלאו, הלקוח ישלים בטופס.";
@@ -460,6 +462,18 @@ async function sendSknFromHistory(clientId, history) {
   return sendQuoteFiles(clientId, items, { skn: true, xlsx: false });
 }
 
+/** The router's choice for a message that matched no exact command, or null when the call fails. */
+async function routeText(text, history) {
+  try {
+    const routed = await routeMessage(text, history);
+    console.log("Router action:", routed.action);
+    return routed;
+  } catch (error) {
+    console.error("Router failed", error?.name || "Error");
+    return null;
+  }
+}
+
 async function processVoiceNote(mediaUrl, clientId, history = []) {
   try {
     const audio = await downloadAudio(mediaUrl);
@@ -469,6 +483,21 @@ async function processVoiceNote(mediaUrl, clientId, history = []) {
     if (!transcript) return sendToWorker(clientId, VOICE_TRANSCRIBE_ERROR);
 
     if (isSknOnlyRequest(transcript)) return sendSknFromHistory(clientId, history);
+    const routed = await routeText(transcript, history);
+    if (routed && routed.action !== "work_items") {
+      if (routed.action === "send_skn") return sendSknFromHistory(clientId, history);
+      if (routed.action === "help") return sendToWorker(clientId, HELP_MESSAGE);
+      if (routed.action === "unclear") return sendToWorker(clientId, unclearQuestion(routed.candidates));
+      if (routed.action === "open_delivery_notes") {
+        try {
+          return sendToWorker(clientId, dbConfigured() ? await listOpenNotesReply(String(clientId)) : OPEN_NOTES_ERROR);
+        } catch (error) {
+          logDbError("Open delivery notes failed", error);
+          return sendToWorker(clientId, OPEN_NOTES_ERROR);
+        }
+      }
+      return sendToWorker(clientId, VOICE_TEXT_ONLY);
+    }
     const { items } = await extractProposedItems(transcript);
     const skn = wantsSkn(transcript);
     const body = items.length ? `${formatProposedItemsReply(items)}${skn ? "" : `\n\n${SKN_HINT}`}` : HELP_MESSAGE;
@@ -691,8 +720,18 @@ export default async function handler(req, res) {
     return send(res, 200, { reply: "כרגע ניתן לשלוח הודעות טקסט בלבד." });
   }
 
-  const findForms = FIND_FORMS_COMMAND.exec(messageText);
-  const exportForms = findForms ? null : EXPORT_FORMS_COMMAND.exec(messageText);
+  // Natural language: only when the message matches no exact command or trigger.
+  const isExactCommand = FIND_FORMS_COMMAND.test(messageText) || EXPORT_FORMS_COMMAND.test(messageText)
+    || OPEN_NOTES_COMMAND.test(messageText) || isSknOnlyRequest(messageText)
+    || isInvoiceRequest(messageText) || Boolean(findFormByTrigger(messageText));
+  const routed = isExactCommand || !process.env.OPENAI_API_KEY ? null : await routeText(messageText, history);
+  if (routed?.action === "help") return send(res, 200, { reply: HELP_MESSAGE });
+  if (routed?.action === "unclear") return send(res, 200, { reply: unclearQuestion(routed.candidates) });
+  const routedMonth = routed?.action === "export_forms" ? routed.month.split("/") : null;
+
+  const findForms = FIND_FORMS_COMMAND.exec(messageText) || (routed?.action === "find_forms" ? [messageText, routed.name] : null);
+  const exportForms = findForms ? null
+    : EXPORT_FORMS_COMMAND.exec(messageText) || (routed?.action === "export_forms" ? [messageText, routedMonth[0] || undefined, routedMonth[1]] : null);
   if (findForms || exportForms) {
     const clientId = payload.client?.id;
     if (clientId === undefined || clientId === null || clientId === "" || !dbConfigured() || !process.env.AGENT4U_API_KEY) {
@@ -719,7 +758,7 @@ export default async function handler(req, res) {
     }
   }
 
-  if (OPEN_NOTES_COMMAND.test(messageText)) {
+  if (OPEN_NOTES_COMMAND.test(messageText) || routed?.action === "open_delivery_notes") {
     const clientId = payload.client?.id;
     if (clientId === undefined || clientId === null || clientId === "" || !dbConfigured()) {
       return send(res, 200, { reply: OPEN_NOTES_ERROR });
@@ -732,7 +771,7 @@ export default async function handler(req, res) {
     }
   }
 
-  if (isSknOnlyRequest(messageText)) {
+  if (isSknOnlyRequest(messageText) || routed?.action === "send_skn") {
     const clientId = payload.client?.id;
     if (clientId === undefined || clientId === null || clientId === "" || !process.env.AGENT4U_API_KEY) {
       return send(res, 200, { reply: NO_RECENT_ITEMS });
@@ -748,7 +787,7 @@ export default async function handler(req, res) {
     return send(res, 500, { error: "השירות אינו מוגדר כרגע." });
   }
 
-  if (isInvoiceRequest(messageText)) {
+  if (isInvoiceRequest(messageText) || routed?.action === "invoice") {
     const clientId = payload.client?.id;
     if (!formsSecretConfigured()) {
       console.error("FORMS_SECRET is not configured");
@@ -773,7 +812,7 @@ export default async function handler(req, res) {
     }
   }
 
-  const formDef = findFormByTrigger(messageText);
+  const formDef = findFormByTrigger(messageText) || (routed && ROUTER_FORM_IDS[routed.action] ? getFormDefinition(ROUTER_FORM_IDS[routed.action]) : null);
   if (formDef) {
     const clientId = payload.client?.id;
     if (!formsSecretConfigured()) {

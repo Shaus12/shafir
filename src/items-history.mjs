@@ -107,3 +107,12 @@ export function findLastItems(history) {
   }
   return [];
 }
+
+/** The last `count` history messages as { role: "bot" | "user", text } (text cut to 500 chars), oldest first. */
+export function recentMessages(history, count) {
+  if (!Array.isArray(history)) return [];
+  return history
+    .map(message => ({ role: isOwnMessage(message) ? "bot" : "user", text: messageText(message).trim().slice(0, 500) }))
+    .filter(message => message.text)
+    .slice(-count);
+}
