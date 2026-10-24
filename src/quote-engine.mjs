@@ -91,7 +91,7 @@ export function numbersIn(text) {
  */
 export function resolveQuantity(parts, source, text, context = "") {
   const numbers = (Array.isArray(parts) ? parts : []).map(Number).filter(n => Number.isFinite(n) && n > 0);
-  if (!numbers.length) return { quantity: null, problem: "" };
+  if (!numbers.length) return { quantity: null, problem: "", consumed: [] };
   const words = norm(source);
   const read = numbersIn(words);
   const has = n => read.some(r => Math.abs(r - n) < 1e-9);
@@ -103,15 +103,16 @@ export function resolveQuantity(parts, source, text, context = "") {
     ok = Boolean(pair) && ((Math.abs(pair[0] - numbers[0]) < 1e-9 && Math.abs(pair[1] - numbers[1]) < 1e-9)
       || (Math.abs(pair[0] - numbers[1]) < 1e-9 && Math.abs(pair[1] - numbers[0]) < 1e-9));
   } else if (ok) ok = false;
-  if (!ok) return { quantity: null, problem: words };
+  if (!ok) return { quantity: null, problem: words, consumed: [] };
   if (numbers.length === 1) {
-    // The model may pass only "2 יחידות" of "2 יחידות בקומה 3 יחידות": look at the original sentence around those
-    // words for the explicit pattern, and apply it when its first number is the one the model took.
+    // The model may pass only "2 יחידות" of "2 יחידות בקומה 3 יחידות": look at the original sentence from those
+    // words on for the explicit pattern, and apply it when its first number is the one the model took.
     const sentence = norm(context);
-    const pair = sentence && sentence.includes(words) && norm(text).includes(sentence) ? explicitProduct(sentence) : null;
-    if (pair && Math.abs(pair[0] - numbers[0]) < 1e-9) return { quantity: round3(pair[0] * pair[1]), problem: "" };
+    const start = sentence ? sentence.indexOf(words) : -1;
+    const pair = start >= 0 && norm(text).includes(sentence) ? productAtStart(sentence.slice(start)) : null;
+    if (pair && Math.abs(pair[0] - numbers[0]) < 1e-9) return { quantity: round3(pair[0] * pair[1]), problem: "", consumed: [words, pair[2]] };
   }
-  return { quantity: round3(numbers.reduce((a, b) => a * b, 1)), problem: "" };
+  return { quantity: round3(numbers.reduce((a, b) => a * b, 1)), problem: "", consumed: [words] };
 }
 
 const WORD_ALTERNATIVES = [...WORDS.keys(), ...FRACTIONS.keys()].sort((a, b) => b.length - a.length).join("|");
@@ -123,16 +124,45 @@ const PRODUCT_PATTERNS = [
   new RegExp(`(?<=^|\\s)(${NUMBER})\\s+פי\\s+(${NUMBER})(?=\\s|$)`),
 ];
 
-/** The two numbers of an explicit multiplication pattern, or null. */
-function explicitProduct(words) {
-  const flat = String(words).replace(/[,;]+/g, " ").replace(/\s+/g, " ");
+const flatten = words => String(words).replace(/[,;]+/g, " ").replace(/\s+/g, " ").trim();
+
+/** The two numbers of an explicit multiplication pattern (and the words it uses), or null. */
+function explicitProduct(words, atStart = false) {
+  const flat = flatten(words);
   for (const pattern of PRODUCT_PATTERNS) {
     const match = pattern.exec(flat);
-    if (!match) continue;
+    if (!match || (atStart && match.index !== 0)) continue;
     const a = numbersIn(match[1])[0], b = numbersIn(match[2])[0];
-    if (Number.isFinite(a) && Number.isFinite(b)) return [a, b];
+    if (Number.isFinite(a) && Number.isFinite(b)) return [a, b, match[0]];
   }
   return null;
+}
+
+/** The pattern only when it starts right at the given words. */
+const productAtStart = words => explicitProduct(words, true);
+
+/** The sentence of the original text an item comes from, from the item's own words on (normalized). */
+function sentenceOf(text, item) {
+  const source = norm(item.quantity_source);
+  const itemWords = norm(item.text);
+  const lines = String(text ?? "").split(/\r?\n/).map(norm);
+  const line = lines.find(l => source && l.includes(source) && itemWords && l.includes(itemWords)) || lines.find(l => source && l.includes(source)) || "";
+  const at = itemWords ? line.indexOf(itemWords) : -1;
+  return at >= 0 ? line.slice(at) : line;
+}
+
+/** Remove a run of words (compared without quotes and punctuation) from a description. */
+function removeWords(description, words) {
+  const target = textKey(words).split(" ").filter(Boolean);
+  const tokens = clean(description).split(" ");
+  if (!target.length) return tokens.join(" ");
+  for (let i = 0; i + target.length <= tokens.length; i++) {
+    if (target.every((word, k) => textKey(tokens[i + k]) === word)) {
+      tokens.splice(i, target.length);
+      break;
+    }
+  }
+  return tokens.join(" ");
 }
 
 /** "2.42 על 2.170" -> "במידות 242/217" (meters become centimetres). */
@@ -175,6 +205,13 @@ const isActionOnly = phrase => textKey(phrase).split(" ").filter(Boolean).every(
 const isBareElement = text => REPLACEABLE.test(clean(text)) && !ACTION_WORDS.test(clean(text));
 
 const FLOOR_WORDS = /קומ(?:ה|ות|ת)/;
+// Areas the soot and painting wordings already say ("מקירות ותקרת המבנה"): no location is added for them.
+const REDUNDANT_AREA = /^(?:ב?ה?מבנה|ב?קירות ו?תקרת ה?מבנה|ב?קירות ו?תקרה)$/;
+// Two verbs joined by ו before the same element ("נקיון וצביעת דלת מעלית") are both kept.
+const VERB = "(?:ני?קי?ון|ניקוי|נקה|קרצוף|קרצף|צביע|צבע|תיקון|נטרול|שיפוץ|ליטוש|הברשה|שפכטל|איטום)";
+const TWO_VERBS = new RegExp(`(?:^|\\s)${VERB}\\S*\\s+ו${VERB}\\S*\\s+\\S`);
+// Pieces of the house wordings: text covered by them counts as placed.
+const HOUSE_PIECES = ["במספר שכבות", "עד לקבלת גוון אחיד ומושלם", "הדבקה פולימרית", "כהכנה לצבע", "קירות ותקרת המבנה"];
 
 /** The unit a quantity phrase states ("50 מטר מרובע" -> 03, "5 יחידות" -> 01), or "". */
 function unitInWords(source) {
@@ -188,7 +225,9 @@ function unitInWords(source) {
 /** "קומת כניסה, גרם מדרגות 4 קומות" -> "בקומת כניסה ובגרם מדרגות 4 קומות": every place joined with "ב". */
 export function locationWithB(location) {
   const parts = clean(location).split(/\s*,\s*|\s+ו(?=[א-ת])/).filter(Boolean);
-  return parts.map((part, index) => `${index ? "ו" : ""}${part.startsWith("ב") ? part : `ב${part}`}`).join(" ");
+  // "ב" + the definite article ה is "במבנה", never "בהמבנה"; a place that already starts with ב stays.
+  const joined = part => (part.startsWith("ב") ? part : part.length > 1 && part.startsWith("ה") ? `ב${part.slice(1)}` : `ב${part}`);
+  return parts.map((part, index) => `${index ? "ו" : ""}${joined(part)}`).join(" ");
 }
 
 /** The area a joint "...וצביעת <area>" phrase paints, when the model gave no location. */
@@ -203,16 +242,20 @@ function itemsFor(item, ctx) {
   if (ctx.expanded.has(phrase)) return []; // the model already split this phrase, and the pair was built once
   const analysis = `${clean(item.text)} ${clean(item.description)} ${clean(item.subject)}`;
 
-  let { quantity, problem } = resolveQuantity(item.quantity_parts, item.quantity_source, ctx.text, clean(item.text));
+  const resolved = resolveQuantity(item.quantity_parts, item.quantity_source, ctx.text, sentenceOf(ctx.text, item));
+  let { quantity, problem } = resolved;
   // A number that only describes the place ("גרם מדרגות 4 קומות") is not the quantity.
   const source = norm(item.quantity_source);
   const placeOnly = quantity !== null && (/^\d+(?:[.,]\d+)?\s+(?:קומות|קומה|דירות|חדרים)$/.test(source) || (clean(item.location) && norm(item.location).includes(source)));
   if (placeOnly) quantity = null;
+  // The words that gave the quantity (and the multiplication around them) are not part of the description.
+  const consumed = placeOnly ? [] : (resolved.consumed || []).sort((a, b) => b.length - a.length);
+  ctx.consumed.push(...consumed);
 
   // Notes for the unplaced list always carry the item's whole phrase, never single words.
   if (problem) ctx.unplaced.push(`${phrase} (כמות לא אומתה)`);
   const leftover = clean(item.leftover);
-  if (leftover && grounded(leftover, ctx.haystack) && !isActionOnly(leftover)) ctx.unplaced.push(`${phrase} (פרט שלא נכלל בסעיף: ${leftover})`);
+  if (leftover && grounded(leftover, ctx.haystack) && !isActionOnly(leftover)) ctx.leftovers.push({ phrase, detail: leftover });
 
   // Soot cleaning and painting are never קומפ': a unit stated in the words wins; otherwise floors count as יח' and areas as מ"ר.
   const stated = unitInWords(item.quantity_source);
@@ -220,8 +263,10 @@ function itemsFor(item, ctx) {
   const soilItem = SOOT_WORDS.test(analysis) || PAINT_WORDS.test(analysis);
   const modelUnit = !placeOnly && UNIT_CODES.includes(item.unit) ? item.unit : "01";
   const unit = soilItem && modelUnit === "09" ? "01" : modelUnit;
-  const make = (description, overrides = {}) => ({ unit, quantity, description: normalizeDimensions(clean(description)), ...overrides });
+  const withoutQuantity = description => consumed.reduce((text, words) => removeWords(text, words), clean(description));
+  const make = (description, overrides = {}) => ({ unit, quantity, description: normalizeDimensions(withoutQuantity(description)), ...overrides });
   const place = withLocation => (withLocation ? locationWithB(withLocation) : "");
+  const areaPlace = withLocation => (REDUNDANT_AREA.test(textKey(withLocation)) ? "" : place(withLocation));
   const wasSoot = ctx.lastSoot;
   ctx.lastSoot = false;
 
@@ -235,14 +280,14 @@ function itemsFor(item, ctx) {
   const sootItem = location => {
     ctx.lastSoot = true;
     ctx.lastSootUnit = areaUnit(location);
-    return make(join(HOUSE.soot, place(location)), { unit: ctx.lastSootUnit });
+    return make(join(HOUSE.soot, areaPlace(location)), { unit: ctx.lastSootUnit });
   };
   const paintItem = (location, afterSootUnit) => {
     const color = clean(item.color).replace(/^גוון\s+/, "");
     const named = color && norm(ctx.text).includes(norm(color)); // a colour that is not in the text is ignored
     // "צביעת הנ"ל" is the same area as the soot cleaning before it, so it counts the same way unless it says otherwise.
     const own = stated && stated !== "09" ? stated : clean(location) ? areaUnit(location) : afterSootUnit || areaUnit(location);
-    return make(join(named ? HOUSE.paintColor(color) : HOUSE.paint, place(location)), { unit: own });
+    return make(join(named ? HOUSE.paintColor(color) : HOUSE.paint, areaPlace(location)), { unit: own });
   };
 
   switch (item.kind) {
@@ -279,7 +324,10 @@ function itemsFor(item, ctx) {
       }
       if (soot && !specific) return [sootItem(item.location)];
       if (paint && !soot && !specific && wasSoot) return [paintItem(item.location, ctx.lastSootUnit)];
-      const description = plainName(item.description || item.text);
+      let description = plainName(item.description || withoutQuantity(item.text));
+      // Two verbs on one element keep both, in the original words: "נקיון וצביעת דלת מעלית".
+      const both = TWO_VERBS.exec(withoutQuantity(item.text));
+      if (both) description = withoutQuantity(item.text).slice(both.index + (both[0].startsWith(" ") ? 1 : 0));
       // painting or cleaning soot of an area (not a specific element) is counted like the house items
       return isBareElement(description) ? replacement(description) : [make(description, soilItem && !specific ? { unit: areaUnit(item.location) } : {})];
     }
@@ -334,12 +382,14 @@ export function buildQuotes(raw, text, { now = new Date() } = {}) {
   const itemTexts = (Array.isArray(raw?.quotes) ? raw.quotes : []).flatMap(quote => (Array.isArray(quote.items) ? quote.items : []).map(item => textKey(item.text)));
   const unplaced = (Array.isArray(raw?.unplaced) ? raw.unplaced : []).map(clean)
     .filter(entry => wordCount(entry) >= 2 && grounded(entry, haystack) && !isActionOnly(entry) && !itemTexts.some(itemText => itemText.includes(textKey(entry))));
-  const phrases = [];
+  const phrases = [...HOUSE_PIECES];
+  const consumed = []; // words that gave a quantity, and the multiplication around them
+  const leftovers = []; // details an item did not take in
   const built = [];
   const rawQuotes = Array.isArray(raw?.quotes) ? raw.quotes : [];
 
   for (const rawQuote of rawQuotes) {
-    const ctx = { text, haystack, unplaced, lastSoot: false, lastSootUnit: "", expanded: new Set() };
+    const ctx = { text, haystack, unplaced, consumed, leftovers, lastSoot: false, lastSootUnit: "", expanded: new Set() };
     const rawItems = Array.isArray(rawQuote.items) ? rawQuote.items : [];
     for (const item of rawItems) phrases.push(item.text);
     const items = rawItems.flatMap(item => itemsFor(item, ctx)).filter(item => item.description);
@@ -373,6 +423,16 @@ export function buildQuotes(raw, text, { now = new Date() } = {}) {
       items,
     });
   }
+
+  phrases.push(...consumed);
+
+  // Words that were used are never listed as not placed: those of the final descriptions, of the house wordings and
+  // of the quantity words (including the multiplication around them).
+  const used = new Set([...built.flatMap(quote => quote.items.map(entry => entry.description)), HOUSE.soot, HOUSE.paint, HOUSE.paintColor(""), HOUSE.attached, ...consumed]
+    .flatMap(words => textKey(words).split(" ")).filter(Boolean));
+  const usedOnly = entry => textKey(entry).split(" ").filter(Boolean).every(word => used.has(word));
+  for (let k = unplaced.length - 1; k >= 0; k--) if (usedOnly(unplaced[k])) unplaced.splice(k, 1);
+  for (const { phrase, detail } of leftovers) if (!usedOnly(detail)) unplaced.push(`${phrase} (פרט שלא נכלל בסעיף: ${detail})`);
 
   let unreadable = raw?.unreadable === true;
   if (!unreadable && wordCount(text) >= MIN_WORDS_FOR_RATIO && (rawQuotes.length || (raw?.unplaced?.length ?? 0))) {

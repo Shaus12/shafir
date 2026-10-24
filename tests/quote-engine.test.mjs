@@ -607,3 +607,75 @@ test("soot cleaning and painting are never קומפ': a stated unit wins, floors
   assert.deepEqual([third.items[2].unit, third.items[3].unit, third.items[14].unit, third.items[15].unit], ["03", "03", "03", "03"]);
   assert.equal(common.items[0].unit, "01");
 });
+
+// ---------- two verbs, quantity words, ב before ה, nothing used listed ----------
+
+test("an element with two verbs keeps both", () => {
+  const text = "נקיון וצביעת דלת מעלית 2 יחידות";
+  for (const description of ["צביעת דלת מעלית", "נקיון וצביעת דלת מעלית", ""]) {
+    const built = run([item("other", { text, description, quantity_parts: [2], quantity_source: "2 יחידות" })], text);
+    assert.deepEqual(rows(built.quotes[0]), [["נקיון וצביעת דלת מעלית", "01", 2]]);
+  }
+});
+
+test("the quantity words are not part of the description", () => {
+  const text = "קרצוף רצפה כולל מבואת כניסה 5 יחידות";
+  for (const description of ["קרצוף רצפה כולל מבואת כניסה 5 יחידות", "קרצוף רצפה כולל מבואת כניסה", ""]) {
+    const built = run([item("other", { text, description, quantity_parts: [5], quantity_source: "5 יחידות" })], text);
+    assert.deepEqual(rows(built.quotes[0]), [["קרצוף רצפה כולל מבואת כניסה", "01", 5]]);
+  }
+  // the words of a multiplication are removed too
+  const cabinets = "נקיון ארונות מתכת 2 יחידות בקומה 3 יחידות";
+  assert.deepEqual(rows(run([item("other", { text: cabinets, description: cabinets, quantity_parts: [2], quantity_source: "2 יחידות" })], cabinets).quotes[0]), [["נקיון ארונות מתכת", "01", 6]]);
+});
+
+test("ב is never put before ה, and the wordings that already say the building add no location", () => {
+  assert.equal(locationWithB("המבנה"), "במבנה");
+  assert.equal(locationWithB("קומת כניסה והמבואה"), "בקומת כניסה ובמבואה");
+  assert.equal(locationWithB("הכניסה"), "בכניסה");
+  for (const location of ["קירות ותקרת המבנה", "המבנה", "בקירות ותקרת המבנה"]) {
+    const built = run([item("soot_clean", { text: "נטרול פיח", location }), item("paint_after_soot", { text: "צביעת הנ\"ל" })], "נטרול פיח צביעת הנ\"ל");
+    assert.deepEqual(built.quotes[0].items.map(i => i.description), [HOUSE.soot, HOUSE.paint]);
+    assert.ok(!formatQuotesReply(built).includes("בהמבנה"));
+  }
+  // a joint phrase over "קירות ותקרת המבנה": two items, no location added
+  const text = "נטרול פיח וצביעת קירות ותקרת המבנה 50 מטר מרובע";
+  const pair = run([item("other", { text, unit: "03", quantity_parts: [50], quantity_source: "50 מטר מרובע" })], text);
+  assert.deepEqual(rows(pair.quotes[0]), [[HOUSE.soot, "03", 50], [HOUSE.paint, "03", 50]]);
+  // a replacement keeps its location, joined correctly
+  const door = run([item("replace", { text: "החלפת דלת המבנה", subject: "דלת", location: "המבנה", singular_noun: true })], "החלפת דלת המבנה");
+  assert.deepEqual(door.quotes[0].items.map(i => i.description), ["פרוק ופינוי דלת במבנה", 'או"ה דלת במבנה כדוגמת הקיים']);
+});
+
+test("words used by a house wording or by the multiplication are not listed as not placed", () => {
+  const text = [
+    "נטרול פיח קומת כניסה",
+    'צביעת הנ"ל במספר שכבות גוון לבן עד לקבלת גוון אחיד ומושלם 5 יחידות',
+    "נקיון ארונות מתכת 2 יחידות בקומה 3 יחידות",
+  ].join("\n");
+  const built = buildQuotes({
+    quotes: [{ address: "", party_kind: "other", party_label: "", items: [
+      item("soot_clean", { text: "נטרול פיח קומת כניסה", location: "קומת כניסה" }),
+      // the model's own words are short: the rest of the sentence is found in the original text
+      item("paint_after_soot", { text: 'צביעת הנ"ל', color: "לבן", quantity_parts: [5], quantity_source: "5 יחידות" }),
+      item("other", { text: "נקיון ארונות מתכת 2 יחידות", description: "נקיון ארונות מתכת", quantity_parts: [2], quantity_source: "2 יחידות" }),
+    ] }],
+    unplaced: ["בקומה 3 יחידות", "עד לקבלת גוון אחיד ומושלם", "במספר שכבות גוון לבן"],
+    unreadable: false,
+  }, text);
+  assert.deepEqual(built.unplaced, []);
+  assert.equal(built.unreadable, false);
+  assert.deepEqual(rows(built.quotes[0]), [
+    [`${HOUSE.soot} בקומת כניסה`, "01", null],
+    ['צביעת הנ"ל במספר שכבות בגוון לבן עד לקבלת גוון אחיד ומושלם', "01", 5],
+    ["נקיון ארונות מתכת", "01", 6],
+  ]);
+  assert.ok(!formatQuotesReply(built).includes("לא שובץ"));
+});
+
+test("the example has an empty לא שובץ and the expected descriptions", () => {
+  assert.deepEqual(result.unplaced, []);
+  assert.ok(!formatQuotesReply(result).includes("לא שובץ"));
+  assert.ok(common.items.some(i => i.description === "נקיון וצביעת דלת מעלית" && i.quantity === 2));
+  assert.ok(common.items.some(i => i.description === "קרצוף רצפה כולל מבואת כניסה" && i.quantity === 5));
+});
