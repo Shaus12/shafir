@@ -116,3 +116,52 @@ export function recentMessages(history, count) {
     .filter(message => message.text)
     .slice(-count);
 }
+
+const QUOTE_HEADER = /^📄\s*\*(.+)\*$/;
+const REPLY_TAIL = /^\*?(?:לא שובץ|סעיפים שבדרך כלל מתווספים):\*?$/;
+
+/**
+ * Quotes from a reply in the quote-engine format (one "📄 *title*" section per quote: chapter line,
+ * "*subchapter:*" line, bullets). Returns specs [{ title, chapterTitle, subTitle, items: [{ unit, quantity, description }] }].
+ */
+export function parseQuotesReply(text) {
+  const specs = [];
+  let current = null;
+  for (const raw of String(text || "").split("\n")) {
+    const line = raw.trim();
+    const header = QUOTE_HEADER.exec(line);
+    if (header) {
+      current = { title: header[1] === "הצעת מחיר" ? "" : header[1], chapterTitle: "", subTitle: "", items: [] };
+      specs.push(current);
+    } else if (REPLY_TAIL.test(line)) {
+      current = null;
+    } else if (current) {
+      const sub = /^\*(.+):\*$/.exec(line);
+      const chapter = /^\*(.+)\*$/.exec(line);
+      if (sub) current.subTitle = sub[1];
+      else if (chapter && !current.chapterTitle) current.chapterTitle = chapter[1];
+      else if (line.startsWith("•")) {
+        const item = parseItemLine(line, 0);
+        if (item) current.items.push({ unit: item.unit, quantity: item.quantity, description: item.description });
+      }
+    }
+  }
+  return specs.filter(spec => spec.items.length);
+}
+
+/**
+ * What the bot's most recent items reply in history holds: { quotes } for the quote-engine format, { items } for
+ * the older format (flat items), or null when there is none. Own messages only, newest first.
+ */
+export function findLastQuotes(history) {
+  if (!Array.isArray(history)) return null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (!isOwnMessage(history[i])) continue;
+    const text = messageText(history[i]);
+    const quotes = parseQuotesReply(text);
+    if (quotes.length) return { quotes };
+    const items = parseItemsReply(text);
+    if (items.length) return { items };
+  }
+  return null;
+}

@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { waitUntil } from "@vercel/functions";
-import { extractProposedItems, formatProposedItemsReply, SUBCHAPTER_MAP } from "../../src/proposed-items.mjs";
-import { wantsSkn, isSknOnlyRequest, findLastItems, historyFrom, withoutHistory, SKN_HINT, NO_RECENT_ITEMS } from "../../src/items-history.mjs";
+import { SUBCHAPTER_MAP } from "../../src/proposed-items.mjs";
+import { extractQuotes, formatQuotesReply, specToQuote } from "../../src/quote-engine.mjs";
+import { wantsSkn, isSknOnlyRequest, findLastQuotes, historyFrom, withoutHistory, SKN_HINT, NO_RECENT_ITEMS } from "../../src/items-history.mjs";
 import { isInvoiceRequest, extractInvoice, invoiceTemplate } from "../../src/invoice/extract.mjs";
 import { sealInvoiceToken } from "../../src/invoice/service.mjs";
 import { saveSingleDocument, saveFileDocuments, listOpenNotesReply, isSavedType, MSG_SAVE_FAILED, OPEN_NOTES_COMMAND } from "../../src/supplier-store.mjs";
@@ -397,6 +398,39 @@ async function sendQuoteFiles(clientId, items, { skn: withSkn = false, xlsx: wit
   }
 }
 
+const safeTitle = title => String(title || "").replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+
+/** Excel and SKN files for each quote of the quote engine: one pair per quote, named and captioned by its title. */
+async function sendQuotesFiles(clientId, specs, { skn: withSkn = false, xlsx: withXlsx = true } = {}) {
+  const stamp = quoteFileName();
+  for (const spec of specs) {
+    if (!spec.items.length) continue;
+    const quote = specToQuote(spec);
+    const name = `${stamp} ${safeTitle(spec.title)}`.trim();
+    const title = spec.title ? `${spec.title} – ` : "";
+    if (withXlsx) {
+      try {
+        const xlsx = new Uint8Array(await quoteToXlsx(quote, { prices: false }).arrayBuffer());
+        await sendFile(clientId, `${title}קובץ אקסל`, "xlsx", xlsx, { mime: XLSX_MIME, filename: `${name}.xlsx` });
+      } catch (error) {
+        console.error("Excel file build failed", error?.name || "Error");
+      }
+    }
+    if (withSkn) {
+      try {
+        await sendFile(clientId, `${title}קובץ לבינארית`, "skn", quoteToSkn(quote), { mime: "application/octet-stream", filename: `${name}.skn` });
+      } catch (error) {
+        console.error("SKN file build failed", error?.name || "Error");
+      }
+    }
+  }
+}
+
+/** Files for the items found in history: quote-engine quotes, or flat items of the older reply format. */
+function sendLastFiles(clientId, last, options) {
+  return last.quotes ? sendQuotesFiles(clientId, last.quotes, options) : sendQuoteFiles(clientId, last.items, options);
+}
+
 export function isAgent4uMediaUrl(mediaUrl) {
   try {
     const url = new URL(mediaUrl);
@@ -467,9 +501,9 @@ function transcriptLine(transcript) {
 }
 
 async function sendSknFromHistory(clientId, history) {
-  const items = findLastItems(history);
-  if (!items.length) return sendToWorker(clientId, NO_RECENT_ITEMS);
-  return sendQuoteFiles(clientId, items, { skn: true, xlsx: false });
+  const last = findLastQuotes(history);
+  if (!last) return sendToWorker(clientId, NO_RECENT_ITEMS);
+  return sendLastFiles(clientId, last, { skn: true, xlsx: false });
 }
 
 /** The price command a routed action stands for, or null. */
@@ -521,11 +555,14 @@ async function processVoiceNote(mediaUrl, clientId, history = []) {
       }
       return sendToWorker(clientId, VOICE_TEXT_ONLY);
     }
-    const { items } = await extractProposedItems(transcript);
+    const result = await extractQuotes(transcript);
     const skn = wantsSkn(transcript);
-    const body = items.length ? `${formatProposedItemsReply(items)}${skn ? "" : `\n\n${SKN_HINT}`}` : HELP_MESSAGE;
+    const hasQuotes = result.quotes.length > 0;
+    const body = hasQuotes || result.unplaced.length
+      ? `${formatQuotesReply(result)}${hasQuotes && !skn ? `\n\n${SKN_HINT}` : ""}`
+      : HELP_MESSAGE;
     await sendToWorker(clientId, `${transcriptLine(transcript)}\n\n${body}`);
-    return sendQuoteFiles(clientId, items, { skn });
+    return sendQuotesFiles(clientId, result.quotes, { skn });
   } catch (error) {
     console.error("Voice note processing failed", error?.name || "Error");
     return sendToWorker(clientId, VOICE_PROCESS_ERROR);
@@ -844,9 +881,9 @@ export default async function handler(req, res) {
     if (clientId === undefined || clientId === null || clientId === "" || !process.env.AGENT4U_API_KEY) {
       return send(res, 200, { reply: NO_RECENT_ITEMS });
     }
-    const items = findLastItems(history);
-    if (!items.length) return send(res, 200, { reply: NO_RECENT_ITEMS });
-    waitUntil(sendQuoteFiles(clientId, items, { skn: true, xlsx: false }));
+    const last = findLastQuotes(history);
+    if (!last) return send(res, 200, { reply: NO_RECENT_ITEMS });
+    waitUntil(sendLastFiles(clientId, last, { skn: true, xlsx: false }));
     return send(res, 200, { reply: "שולח את קובץ הבינארית..." });
   }
 
@@ -912,12 +949,15 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { items } = await extractProposedItems(messageText);
+    const result = await extractQuotes(messageText);
     const skn = wantsSkn(messageText);
-    const reply = items.length ? `${formatProposedItemsReply(items)}${skn ? "" : `\n\n${SKN_HINT}`}` : HELP_MESSAGE;
+    const hasQuotes = result.quotes.length > 0;
+    const reply = hasQuotes || result.unplaced.length
+      ? `${formatQuotesReply(result)}${hasQuotes && !skn ? `\n\n${SKN_HINT}` : ""}`
+      : HELP_MESSAGE;
     const clientId = payload.client?.id;
-    if (items.length && clientId !== undefined && clientId !== null && clientId !== "" && process.env.AGENT4U_API_KEY) {
-      waitUntil(sendQuoteFiles(clientId, items, { skn }));
+    if (hasQuotes && clientId !== undefined && clientId !== null && clientId !== "" && process.env.AGENT4U_API_KEY) {
+      waitUntil(sendQuotesFiles(clientId, result.quotes, { skn }));
     }
     return send(res, 200, { reply });
   } catch (error) {
