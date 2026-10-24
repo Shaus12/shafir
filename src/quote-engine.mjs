@@ -222,11 +222,18 @@ function unitInWords(source) {
   return "";
 }
 
+const PLACE_NOUNS = new Set(["המבנה", "הכניסה", "הסלון", "המטבח", "החדר", "המדרגות", "המבואה", "הדירה", "הקומה", "הגג", "המרפסת", "השירותים", "האמבטיה"]);
+
 /** "קומת כניסה, גרם מדרגות 4 קומות" -> "בקומת כניסה ובגרם מדרגות 4 קומות": every place joined with "ב". */
 export function locationWithB(location) {
   const parts = clean(location).split(/\s*,\s*|\s+ו(?=[א-ת])/).filter(Boolean);
-  // "ב" + the definite article ה is "במבנה", never "בהמבנה"; a place that already starts with ב stays.
-  const joined = part => (part.startsWith("ב") ? part : part.length > 1 && part.startsWith("ה") ? `ב${part.slice(1)}` : `ב${part}`);
+  // "ב" + the definite article ה of a common place noun is "במבנה", never "בהמבנה"; any other word keeps its ה
+  // ("בהרצל"), and a place that already starts with ב stays.
+  const joined = part => {
+    if (part.startsWith("ב")) return part;
+    const [first, ...rest] = part.split(" ");
+    return PLACE_NOUNS.has(first) ? [`ב${first.slice(1)}`, ...rest].join(" ") : `ב${part}`;
+  };
   return parts.map((part, index) => `${index ? "ו" : ""}${joined(part)}`).join(" ");
 }
 

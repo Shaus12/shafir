@@ -679,3 +679,15 @@ test("the example has an empty לא שובץ and the expected descriptions", () 
   assert.ok(common.items.some(i => i.description === "נקיון וצביעת דלת מעלית" && i.quantity === 2));
   assert.ok(common.items.some(i => i.description === "קרצוף רצפה כולל מבואת כניסה" && i.quantity === 5));
 });
+
+test("the ה after ב is dropped only for the common place nouns", () => {
+  for (const noun of ["המבנה", "הכניסה", "הסלון", "המטבח", "החדר", "המדרגות", "המבואה", "הדירה", "הקומה", "הגג", "המרפסת", "השירותים", "האמבטיה"]) {
+    assert.equal(locationWithB(noun), `ב${noun.slice(1)}`);
+  }
+  assert.equal(locationWithB("הרצל 5"), "בהרצל 5");
+  assert.equal(locationWithB("הדר"), "בהדר");
+  assert.equal(locationWithB("המפעל"), "בהמפעל");
+  assert.equal(locationWithB("הסלון והרצל"), "בסלון ובהרצל");
+  assert.equal(locationWithB("המטבח הגדול"), "במטבח הגדול");
+  assert.equal(locationWithB("בהרצל"), "בהרצל");
+});
