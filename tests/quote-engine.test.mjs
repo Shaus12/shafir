@@ -427,8 +427,8 @@ test("the expected items of the example, quote by quote", () => {
     ['או"ה פרקט ברצפת המבנה כדוגמת הקיים', "03", 45],
     ["פרוק ופינוי פרקט במבואת דירות", "03", 8],
     ['או"ה פרקט במבואת דירות כדוגמת הקיים', "03", 8],
-    [`${HOUSE.soot} במבואת דירות`, "01", null],
-    [`${HOUSE.paint} במבואת דירות`, "01", null],
+    [`${HOUSE.soot} במבואת דירות`, "03", null],
+    [`${HOUSE.paint} במבואת דירות`, "03", null],
   ]);
   assert.deepEqual(result.unplaced, []);
 });
@@ -446,9 +446,9 @@ test("soot and painting wording only for walls, ceilings or an area; a specific 
   assert.deepEqual(rows(built.quotes[0]), [
     ["נקיון חיפוי שיש", "01", 5],
     ["נקיון פיח דלת מעלית", "01", null],
-    [HOUSE.soot, "01", null],
+    [HOUSE.soot, "03", null],
     ["צביעת דלתות", "01", 3],
-    ["צביעת קירות", "01", null], // not right after its soot cleaning (the element painting came between)
+    ["צביעת קירות", "03", null], // not right after its soot cleaning (the element painting came between)
   ]);
 });
 
@@ -479,8 +479,8 @@ test("two actions on one area are two items with the area, once; one element's c
   ]) {
     const built = buildQuotes(single([...items, item("other", { text: "נקיון וצביעת דלת מעלית 2 יחידות", description: "נקיון וצביעת דלת מעלית", quantity_parts: [2], quantity_source: "2 יחידות" })]), text);
     assert.deepEqual(rows(built.quotes[0]), [
-      [`${HOUSE.soot} במבואת דירות`, "01", null],
-      [`${HOUSE.paint} במבואת דירות`, "01", null],
+      [`${HOUSE.soot} במבואת דירות`, "03", null],
+      [`${HOUSE.paint} במבואת דירות`, "03", null],
       ["נקיון וצביעת דלת מעלית", "01", 2],
     ]);
   }
@@ -529,4 +529,81 @@ test("a missing quantity is an empty cell in Excel; the SKN writer writes 0.00 a
   assert.ok(decode1255(skn).includes("010101010" + "01" + "000000.00")); // no way to leave it empty in the fixed-width format
   const back = sknToQuote(skn).chapters[0].subchapters[0].items;
   assert.deepEqual(back.map(i => [i.unit, i.qty]), [["01", 0], ["01", 5]]);
+});
+
+// ---------- party split, multiplication from the sentence, verbs, units ----------
+
+const run = (items, text, extra = {}) => buildQuotes(single(items, extra), text);
+
+test("only a party opens a quote: places stay in the current quote with the place in the description", () => {
+  assert.equal(result.quotes.length, 2);
+  assert.deepEqual(result.quotes.map(q => q.subTitle), ["עבודות מבנה", "דירה 12 צד ג'"]);
+  assert.equal(third.items.filter(i => i.description.includes("מבואת דירות")).length, 4); // the מבואת דירות items are in the third-party quote
+  assert.equal(common.items.find(i => i.description.startsWith("נקיון ארונות מתכת")).quantity, 6);
+  assert.deepEqual(result.unplaced, []);
+  assert.ok(!formatQuotesReply(result).includes("לא שובץ"));
+
+  // the model opening a quote for "מבואת דירות" does not make it one: its items move into the third-party quote
+  const split = structuredClone(MODEL_ANSWER);
+  const moved = split.quotes[1].items.splice(-2); // the parquet replacement and the soot + painting phrase
+  split.quotes.push({ address: "", party_kind: "apartment", party_label: "מבואת דירות", items: moved });
+  const built = buildQuotes(split, TEXT);
+  assert.equal(built.quotes.length, 2);
+  assert.deepEqual(rows(built.quotes[1]), rows(third));
+
+  // a place that is not in an item's words is added to the description
+  const text = "דירה 5 צד ג' צביעת תקרה חדר שינה צביעת קיר";
+  const places = buildQuotes({ quotes: [
+    { address: "", party_kind: "third_party", party_label: "דירה 5 צד ג'", items: [item("other", { text: "צביעת תקרה", description: "צביעת תקרה" })] },
+    { address: "", party_kind: "other", party_label: "חדר שינה", items: [item("other", { text: "צביעת קיר", description: "צביעת קיר" })] },
+    { address: "", party_kind: "apartment", party_label: "סלון", items: [] },
+  ], unplaced: [], unreadable: false }, text);
+  assert.equal(places.quotes.length, 1);
+  assert.deepEqual(places.quotes[0].items.map(i => i.description), ["צביעת תקרה", "צביעת קיר בחדר שינה"]);
+});
+
+test("the multiplication pattern is found in the original sentence when the model passed only the first number", () => {
+  const text = "נקיון ארונות מתכת 2 יחידות בקומה 3 יחידות";
+  const cabinets = quantity => run([item("other", { text, description: "נקיון ארונות מתכת", ...quantity })], text).quotes[0].items[0];
+  assert.equal(cabinets({ quantity_parts: [2], quantity_source: "2 יחידות" }).quantity, 6);
+  assert.equal(cabinets({ quantity_parts: [2, 3], quantity_source: "2 יחידות בקומה 3 יחידות" }).quantity, 6);
+  assert.equal(cabinets({ quantity_parts: [3], quantity_source: "3 יחידות" }).quantity, 3); // the n does not match: no multiplication
+  assert.equal(cabinets({ quantity_parts: [2], quantity_source: "2 יחידות" }).unit, "01");
+  assert.equal(resolveQuantity([2], "2 יחידות", text, "נקיון ארונות מתכת 2 יחידות בקומה 3 יחידות").quantity, 6);
+  assert.equal(resolveQuantity([2], "2 יחידות", text, "").quantity, 2);
+});
+
+test("replacement verbs of a replacement pair are never listed as not placed", () => {
+  const text = "פירוק אספקה והתקנת חלון אלומיניום";
+  const built = buildQuotes({
+    quotes: [{ address: "", party_kind: "other", party_label: "", items: [item("replace", { text, subject: "חלון אלומיניום", singular_noun: true, leftover: "פירוק אספקה והתקנת" })] }],
+    unplaced: ["פירוק אספקה והתקנת", "פירוק אספקה", "אספקה והתקנת חלון"],
+    unreadable: false,
+  }, text);
+  assert.deepEqual(built.unplaced, []);
+  assert.equal(built.quotes[0].items.length, 2);
+});
+
+test("soot cleaning and painting are never קומפ': a stated unit wins, floors count as יח', otherwise מ\"ר", () => {
+  const unitOf = (items, text) => run(items, text).quotes[0].items.map(i => i.unit);
+  // no stated unit, the model says קומפ': an area is מ"ר
+  assert.deepEqual(unitOf([item("soot_clean", { text: "נטרול פיח מבואה", location: "מבואה", unit: "09" })], "נטרול פיח מבואה"), ["03"]);
+  // the location counts floors: יח'
+  assert.deepEqual(unitOf([item("soot_clean", { text: "נטרול פיח קומה 3", location: "קומה 3", unit: "09" })], "נטרול פיח קומה 3"), ["01"]);
+  // a stated unit wins over the model's unit
+  assert.deepEqual(unitOf([item("soot_clean", { text: "נטרול פיח מבואה 20 מטר מרובע", location: "מבואה", unit: "01", quantity_parts: [20], quantity_source: "20 מטר מרובע" })], "נטרול פיח מבואה 20 מטר מרובע"), ["03"]);
+  assert.deepEqual(unitOf([
+    item("soot_clean", { text: "נטרול פיח מבואה" }),
+    item("paint_after_soot", { text: "צביעת הנ\"ל 4 יחידות", unit: "03", quantity_parts: [4], quantity_source: "4 יחידות" }),
+  ], "נטרול פיח מבואה צביעת הנ\"ל 4 יחידות"), ["03", "01"]);
+  // the painting that follows soot cleaning of floors counts the same way
+  assert.deepEqual(unitOf([
+    item("soot_clean", { text: "נטרול פיח קומה 2", location: "קומה 2" }),
+    item("paint_after_soot", { text: "צביעת הנ\"ל במספר שכבות", unit: "09" }),
+  ], "נטרול פיח קומה 2 צביעת הנ\"ל במספר שכבות"), ["01", "01"]);
+  // a specific element with the model's קומפ' is not קומפ' either
+  assert.deepEqual(unitOf([item("other", { text: "נקיון פיח דלת", description: "נקיון פיח דלת", unit: "09" })], "נקיון פיח דלת"), ["01"]);
+  // the example: soot and painting of the third-party quote
+  assert.deepEqual([third.items[2].unit, third.items[3].unit, third.items[14].unit, third.items[15].unit], ["03", "03", "03", "03"]);
+  assert.equal(common.items[0].unit, "01");
 });

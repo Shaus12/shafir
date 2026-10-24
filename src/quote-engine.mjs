@@ -89,7 +89,7 @@ export function numbersIn(text) {
  * The quantity the text states: the product of `parts`, accepted only when the quoted words are really in the
  * message and every part is a number read from those words. Otherwise null (missing, never guessed).
  */
-export function resolveQuantity(parts, source, text) {
+export function resolveQuantity(parts, source, text, context = "") {
   const numbers = (Array.isArray(parts) ? parts : []).map(Number).filter(n => Number.isFinite(n) && n > 0);
   if (!numbers.length) return { quantity: null, problem: "" };
   const words = norm(source);
@@ -104,6 +104,13 @@ export function resolveQuantity(parts, source, text) {
       || (Math.abs(pair[0] - numbers[1]) < 1e-9 && Math.abs(pair[1] - numbers[0]) < 1e-9));
   } else if (ok) ok = false;
   if (!ok) return { quantity: null, problem: words };
+  if (numbers.length === 1) {
+    // The model may pass only "2 יחידות" of "2 יחידות בקומה 3 יחידות": look at the original sentence around those
+    // words for the explicit pattern, and apply it when its first number is the one the model took.
+    const sentence = norm(context);
+    const pair = sentence && sentence.includes(words) && norm(text).includes(sentence) ? explicitProduct(sentence) : null;
+    if (pair && Math.abs(pair[0] - numbers[0]) < 1e-9) return { quantity: round3(pair[0] * pair[1]), problem: "" };
+  }
   return { quantity: round3(numbers.reduce((a, b) => a * b, 1)), problem: "" };
 }
 
@@ -148,6 +155,8 @@ function damageChapter(rawQuote, items) {
   return CHAPTER.other;
 }
 
+// A party (a new quote): common property, third party, an apartment by number, the insured.
+const PARTY_WORDS = /רכוש משותף|צד ג|דירה\s*\d+|מבוטח/;
 const fallbackParty = kind => ({ common_property: "רכוש משותף", third_party: "צד ג'", insured: "מבוטח", apartment: "דירה" }[kind] || "");
 
 // An element named with none of these actions is a replacement ("פרקט ברצפת המבנה 45 מ"ר", "חלון", "דלת").
@@ -160,10 +169,21 @@ const SPECIFIC_ELEMENT = /(^|\s)[בהלוכש]?(?:שיש|חיפוי|ארון|א�
 const SOOT_WORDS = /פיח|נטרול/;
 const PAINT_WORDS = /צביע|צבע/;
 // Words of an action on its own (never worth listing as "not placed").
-const ACTION_ONLY = /^(?:ה?חלפ\S*|פירוק|פרוק|אספק\S*|התקנ\S*|ני?קי?ון|ניקוי|נטרול|צביע\S*|צבע|קרצוף|תיקון|של|כולל|את|על)$/;
+const ACTION_ONLY = /^ו?(?:ה?חלפ\S*|פירוק|פרוק|אספק\S*|התקנ\S*|אוה|ני?קי?ון|ניקוי|נטרול|צביע\S*|צבע|קרצוף|תיקון|של|כולל|את|על)$/;
 const isActionOnly = phrase => textKey(phrase).split(" ").filter(Boolean).every(word => ACTION_ONLY.test(word) || ACTION_WORDS.test(word));
 
 const isBareElement = text => REPLACEABLE.test(clean(text)) && !ACTION_WORDS.test(clean(text));
+
+const FLOOR_WORDS = /קומ(?:ה|ות|ת)/;
+
+/** The unit a quantity phrase states ("50 מטר מרובע" -> 03, "5 יחידות" -> 01), or "". */
+function unitInWords(source) {
+  const words = textKey(source);
+  if (/(?:^| )(?:מטר מרובע|מטרים מרובעים|מר|ממר)(?: |$)/.test(words)) return "03";
+  if (/(?:^| )(?:מא|מטר אורך|מטרים|מטר)(?: |$)/.test(words)) return "02";
+  if (/(?:^| )(?:יחידות|יחידה|יח)(?: |$)/.test(words)) return "01";
+  return "";
+}
 
 /** "קומת כניסה, גרם מדרגות 4 קומות" -> "בקומת כניסה ובגרם מדרגות 4 קומות": every place joined with "ב". */
 export function locationWithB(location) {
@@ -183,7 +203,7 @@ function itemsFor(item, ctx) {
   if (ctx.expanded.has(phrase)) return []; // the model already split this phrase, and the pair was built once
   const analysis = `${clean(item.text)} ${clean(item.description)} ${clean(item.subject)}`;
 
-  let { quantity, problem } = resolveQuantity(item.quantity_parts, item.quantity_source, ctx.text);
+  let { quantity, problem } = resolveQuantity(item.quantity_parts, item.quantity_source, ctx.text, clean(item.text));
   // A number that only describes the place ("גרם מדרגות 4 קומות") is not the quantity.
   const source = norm(item.quantity_source);
   const placeOnly = quantity !== null && (/^\d+(?:[.,]\d+)?\s+(?:קומות|קומה|דירות|חדרים)$/.test(source) || (clean(item.location) && norm(item.location).includes(source)));
@@ -194,7 +214,12 @@ function itemsFor(item, ctx) {
   const leftover = clean(item.leftover);
   if (leftover && grounded(leftover, ctx.haystack) && !isActionOnly(leftover)) ctx.unplaced.push(`${phrase} (פרט שלא נכלל בסעיף: ${leftover})`);
 
-  const unit = !placeOnly && UNIT_CODES.includes(item.unit) ? item.unit : "01";
+  // Soot cleaning and painting are never קומפ': a unit stated in the words wins; otherwise floors count as יח' and areas as מ"ר.
+  const stated = unitInWords(item.quantity_source);
+  const areaUnit = location => (stated && stated !== "09" ? stated : placeOnly || FLOOR_WORDS.test(clean(location)) ? "01" : "03");
+  const soilItem = SOOT_WORDS.test(analysis) || PAINT_WORDS.test(analysis);
+  const modelUnit = !placeOnly && UNIT_CODES.includes(item.unit) ? item.unit : "01";
+  const unit = soilItem && modelUnit === "09" ? "01" : modelUnit;
   const make = (description, overrides = {}) => ({ unit, quantity, description: normalizeDimensions(clean(description)), ...overrides });
   const place = withLocation => (withLocation ? locationWithB(withLocation) : "");
   const wasSoot = ctx.lastSoot;
@@ -209,12 +234,15 @@ function itemsFor(item, ctx) {
   };
   const sootItem = location => {
     ctx.lastSoot = true;
-    return make(join(HOUSE.soot, place(location)));
+    ctx.lastSootUnit = areaUnit(location);
+    return make(join(HOUSE.soot, place(location)), { unit: ctx.lastSootUnit });
   };
-  const paintItem = location => {
+  const paintItem = (location, afterSootUnit) => {
     const color = clean(item.color).replace(/^גוון\s+/, "");
     const named = color && norm(ctx.text).includes(norm(color)); // a colour that is not in the text is ignored
-    return make(join(named ? HOUSE.paintColor(color) : HOUSE.paint, place(location)));
+    // "צביעת הנ"ל" is the same area as the soot cleaning before it, so it counts the same way unless it says otherwise.
+    const own = stated && stated !== "09" ? stated : clean(location) ? areaUnit(location) : afterSootUnit || areaUnit(location);
+    return make(join(named ? HOUSE.paintColor(color) : HOUSE.paint, place(location)), { unit: own });
   };
 
   switch (item.kind) {
@@ -247,12 +275,13 @@ function itemsFor(item, ctx) {
         ctx.expanded.add(phrase);
         const first = sootItem(area);
         ctx.lastSoot = false;
-        return [first, paintItem(area)];
+        return [first, paintItem(area, ctx.lastSootUnit)];
       }
       if (soot && !specific) return [sootItem(item.location)];
-      if (paint && !soot && !specific && wasSoot) return [paintItem(item.location)];
+      if (paint && !soot && !specific && wasSoot) return [paintItem(item.location, ctx.lastSootUnit)];
       const description = plainName(item.description || item.text);
-      return isBareElement(description) ? replacement(description) : [make(description)];
+      // painting or cleaning soot of an area (not a specific element) is counted like the house items
+      return isBareElement(description) ? replacement(description) : [make(description, soilItem && !specific ? { unit: areaUnit(item.location) } : {})];
     }
   }
 }
@@ -310,7 +339,7 @@ export function buildQuotes(raw, text, { now = new Date() } = {}) {
   const rawQuotes = Array.isArray(raw?.quotes) ? raw.quotes : [];
 
   for (const rawQuote of rawQuotes) {
-    const ctx = { text, haystack, unplaced, lastSoot: false, expanded: new Set() };
+    const ctx = { text, haystack, unplaced, lastSoot: false, lastSootUnit: "", expanded: new Set() };
     const rawItems = Array.isArray(rawQuote.items) ? rawQuote.items : [];
     for (const item of rawItems) phrases.push(item.text);
     const items = rawItems.flatMap(item => itemsFor(item, ctx)).filter(item => item.description);
@@ -321,7 +350,19 @@ export function buildQuotes(raw, text, { now = new Date() } = {}) {
     const kind = rawQuote.party_kind;
     const common = kind === "common_property";
     const label = clean(rawQuote.party_label);
-    const party = [common ? "רכוש משותף" : label, fallbackParty(kind)].find(name => name && grounded(name, haystack)) || "";
+    // A new quote opens only for a party; a place ("מבואת דירות", "חדר שינה", "סלון") never does.
+    const party = [common ? "רכוש משותף" : label, fallbackParty(kind)].find(name => name && grounded(name, haystack) && PARTY_WORDS.test(name)) || "";
+    if (!party && built.length) {
+      const current = built.at(-1);
+      const place = label && !PARTY_WORDS.test(label) && grounded(label, haystack) ? locationWithB(label) : "";
+      for (const entry of items) {
+        if (place && !entry.description.includes(label) && !entry.description.includes(place)) entry.description = join(entry.description, place);
+      }
+      current.items.push(...items);
+      if (damageChapter(rawQuote, rawItems) === CHAPTER.fire) current.chapterTitle = CHAPTER.fire;
+      if (place) phrases.push(label);
+      continue;
+    }
     if (addressOk) phrases.push(address);
     if (party) phrases.push(party);
 
