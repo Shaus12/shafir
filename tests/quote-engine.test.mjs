@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  buildQuotes, extractQuotes, formatQuotesReply, specToQuote, numbersIn, resolveQuantity, normalizeDimensions,
-  HOUSE, CHAPTER, ADDON_SOOT_SUCTION, ADDON_GENERAL_CLEAN,
+  buildQuotes, extractQuotes, formatQuotesReply, specToQuote, numbersIn, resolveQuantity, normalizeDimensions, quoteOutput,
+  HOUSE, CHAPTER, ADDON_SOOT_SUCTION, ADDON_GENERAL_CLEAN, SCRAMBLED_REPLY,
 } from "../src/quote-engine.mjs";
 import { parseQuotesReply, findLastQuotes } from "../src/items-history.mjs";
 import { quoteToSkn, sknToQuote } from "../src/skn/model.mjs";
@@ -58,6 +58,7 @@ const MODEL_ANSWER = {
     },
   ],
   unplaced: [],
+  unreadable: false,
 };
 
 const result = buildQuotes(MODEL_ANSWER, TEXT);
@@ -134,7 +135,7 @@ test("a quantity not backed by the original words stays missing and is listed", 
 
   const invented = buildQuotes({ quotes: [{ address: "", party_kind: "other", party_label: "", items: [item("other", { description: "צביעה", quantity_parts: [40], quantity_source: "40 מטר" })] }], unplaced: [] }, "צביעה בלי כמות");
   assert.equal(invented.quotes[0].items[0].quantity, null);
-  assert.ok(invented.unplaced.some(entry => entry.startsWith("כמות לא אומתה")));
+  assert.ok(invented.unplaced.some(entry => entry.endsWith("(כמות לא אומתה)")));
 });
 
 test("numbers in words, fractions and dimensions", () => {
@@ -191,7 +192,7 @@ test("the reply has a section per quote, the unplaced list and the add-ons, and 
 
 test("add-ons: none when the general cleaning is already there and there is no fire", () => {
   const plain = buildQuotes({
-    quotes: [{ address: "", party_kind: "other", party_label: "", items: [item("other", { description: "נקיון כללי בסיום העבודות", unit: "09", quantity_parts: [1], quantity_source: "1" }), item("other", { description: "תיקון נזילה" })] }],
+    quotes: [{ address: "", party_kind: "other", party_label: "", items: [item("other", { text: "נקיון כללי בסיום העבודות 1", description: "נקיון כללי בסיום העבודות", unit: "09", quantity_parts: [1], quantity_source: "1" }), item("other", { text: "תיקון נזילה", description: "תיקון נזילה" })] }],
     unplaced: [],
   }, "נקיון כללי בסיום העבודות 1 תיקון נזילה");
   assert.deepEqual(plain.addons, []);
@@ -211,13 +212,19 @@ test("extractQuotes sends a strict structured request and builds the quotes from
 });
 
 test("the unplaced list is shown with the original words and is not read back as items", () => {
+  const text = "צבע קירות 3 מטר צביעת תקרה 4 מטר צביעת פינה 2 מטר גוון חם לא הובן";
   const withLeftover = buildQuotes({
-    quotes: [{ address: "", party_kind: "other", party_label: "", items: [item("other", { text: "צבע קירות 3 מטר", description: "צבע קירות", unit: "03", leftover: "מילה שנשארה" })] }],
-    unplaced: ["חלק שלא הובן"],
-  }, "צבע קירות 3 מטר");
+    quotes: [{ address: "", party_kind: "other", party_label: "", items: [
+      item("other", { text: "צבע קירות 3 מטר", description: "צבע קירות", unit: "03" }),
+      item("other", { text: "צביעת תקרה 4 מטר", description: "צביעת תקרה", unit: "03" }),
+      item("other", { text: "צביעת פינה 2 מטר", description: "צביעת פינה", unit: "03", leftover: "גוון חם" }),
+    ] }],
+    unplaced: ["לא הובן"],
+    unreadable: false,
+  }, text);
   const reply = formatQuotesReply(withLeftover);
-  assert.ok(reply.includes("*לא שובץ:*") && reply.includes("• חלק שלא הובן") && reply.includes("מילה שנשארה"));
-  assert.equal(parseQuotesReply(reply)[0].items.length, 1);
+  assert.ok(reply.includes("*לא שובץ:*") && reply.includes("• לא הובן") && reply.includes("גוון חם"));
+  assert.equal(parseQuotesReply(reply)[0].items.length, 3);
 });
 
 test("singular element with no quantity is one; plural or unclear stays missing", () => {
@@ -253,4 +260,140 @@ test("a colour that is not in the text is ignored; painting without a colour kee
   assert.equal(buildQuotes(raw("גוון כחול"), "פיח וצביעה בכחול").quotes[0].items[1].description, 'צביעת הנ"ל במספר שכבות בגוון כחול עד לקבלת גוון אחיד ומושלם');
   assert.equal(buildQuotes(raw("ירוק"), "פיח וצביעה").quotes[0].items[1].description, HOUSE.paint);
   assert.equal(buildQuotes(raw(""), "פיח וצביעה").quotes[0].items[1].description, HOUSE.paint);
+});
+
+// ---------- hardening ----------
+
+const NOW = new Date("2026-10-24T09:00:00Z");
+const single = (items, extra = {}) => ({ quotes: [{ address: "", party_kind: "other", party_label: "", items, ...extra }], unplaced: [], unreadable: false });
+
+test("scrambled text (the example with its words reversed): no items, no files, only the scrambled reply", () => {
+  const scrambled = TEXT.split(/\s+/).reverse().join(" ");
+  // Even a model that keeps returning the items it "sees" cannot get output through: its phrases are not in the text.
+  const built = buildQuotes(MODEL_ANSWER, scrambled);
+  assert.equal(built.unreadable, true);
+  assert.deepEqual([built.quotes, built.unplaced, built.addons], [[], [], []]);
+  const out = quoteOutput(built, { skn: true });
+  assert.equal(out.reply, SCRAMBLED_REPLY);
+  assert.equal(out.reply, "הטקסט נראה משובש (אולי הועתק מקובץ PDF). שלחו אותו שוב בהקלדה או בהקלטה.");
+  assert.deepEqual(out.specs, []); // the webhook sends files only for these specs
+
+  // The model flagging the text as unreadable is enough, whatever else it returned.
+  const flagged = buildQuotes({ ...MODEL_ANSWER, unreadable: true }, TEXT);
+  assert.equal(flagged.unreadable, true);
+  assert.deepEqual(quoteOutput(flagged).specs, []);
+
+  // The real example is not flagged.
+  assert.equal(buildQuotes(MODEL_ANSWER, TEXT).unreadable, false);
+  assert.ok(quoteOutput(buildQuotes(MODEL_ANSWER, TEXT)).specs.length === 2);
+});
+
+test("more than a third of the text not placed in any item is unreadable", () => {
+  const text = "צבע קירות 3 מטר ועוד הרבה מילים שאף אחד לא שיבץ לשום סעיף בכלל";
+  const built = buildQuotes(single([item("other", { text: "צבע קירות 3 מטר", description: "צבע קירות", unit: "03", quantity_parts: [3], quantity_source: "3 מטר" })]), text);
+  assert.equal(built.unreadable, true);
+  assert.equal(buildQuotes({ quotes: [], unplaced: [], unreadable: false }, "מה שלומך היום אצלך בבית אצל כולם").unreadable, false); // nothing extracted: help message, not "scrambled"
+});
+
+test("multiplication only for an explicit pattern in the same phrase", () => {
+  assert.equal(resolveQuantity([2, 3], "2 יחידות בקומה 3 קומות", "2 יחידות בקומה 3 קומות").quantity, 6);
+  assert.equal(resolveQuantity([2, 3], "שתי יחידות בקומה שלוש קומות", "שתי יחידות בקומה שלוש קומות").quantity, 6);
+  assert.equal(resolveQuantity([4, 5], "4 כפול 5", "4 כפול 5").quantity, 20);
+  assert.equal(resolveQuantity([3, 2], "3 פי 2", "3 פי 2").quantity, 6);
+  assert.equal(resolveQuantity([2, 3], "2 בחדר 3 חדרים", "2 בחדר 3 חדרים").quantity, 6);
+  // any other pair of numbers is never multiplied
+  const text = 'ניקיון 45 מ"ר צביעה 8 מ"ר';
+  assert.equal(resolveQuantity([45, 8], '45 מ"ר צביעה 8 מ"ר', text).quantity, null);
+  assert.equal(resolveQuantity([5, 12], "5 יחידות 12 קומות", "5 יחידות 12 קומות").quantity, null);
+  assert.equal(resolveQuantity([2, 3, 4], "2 כפול 3 כפול 4", "2 כפול 3 כפול 4").quantity, null);
+  assert.equal(resolveQuantity([6], "2 כפול 3", "2 כפול 3").quantity, null); // a part that is not read from the words
+  const built = buildQuotes(single([item("other", { text: 'ארונות מתכת 45 מ"ר 8 מ"ר', description: "ארונות מתכת", quantity_parts: [45, 8], quantity_source: '45 מ"ר 8 מ"ר' })]), 'ארונות מתכת 45 מ"ר 8 מ"ר');
+  assert.equal(built.quotes[0].items.at(-1).quantity, null);
+});
+
+test("replacements only for elements in the fixed list, whatever the model says", () => {
+  const text = "החלפת קירות ותקרת המבנה 50 מטר החלפת קיר גבס 3 החלפת דלת פנים";
+  const built = buildQuotes(single([
+    item("replace", { text: "החלפת קירות ותקרת המבנה 50 מטר", subject: "קירות ותקרת המבנה", description: "קירות ותקרת המבנה", unit: "03", quantity_parts: [50], quantity_source: "50 מטר" }),
+    item("replace", { text: "החלפת קיר גבס 3", subject: "קיר גבס", description: "קיר גבס" }),
+    item("replace", { text: "החלפת דלת פנים", subject: "דלת פנים", singular_noun: true }),
+  ]), text);
+  assert.deepEqual(built.quotes[0].items.map(i => i.description), [
+    "קירות ותקרת המבנה", "קיר גבס", "פרוק ופינוי דלת פנים", 'או"ה דלת פנים כדוגמת הקיים',
+  ]);
+  // a surface named by a "bare" item is not turned into a replacement either
+  const surfaces = buildQuotes(single([
+    item("other", { text: "קירות", description: "קירות" }), item("other", { text: "תקרה", description: "תקרה" }), item("other", { text: "רצפה", description: "רצפה" }),
+  ]), "קירות תקרה רצפה");
+  assert.deepEqual(surfaces.quotes[0].items.map(i => i.description), ["קירות", "תקרה", "רצפה"]);
+  // the air conditioner kind needs an air conditioner in the text
+  const notAc = buildQuotes(single([item("ac_replace", { text: "החלפת רדיאטור בסלון", description: "רדיאטור בסלון" })]), "החלפת רדיאטור בסלון");
+  assert.deepEqual(notAc.quotes[0].items.map(i => i.description), ["רדיאטור בסלון"]);
+});
+
+test("a quantity above 30 units or 1000 m / m² is kept but marked for checking", () => {
+  const text = "כלים 60 ספסלים 30 ריצוף 1500 שטיחים 1000 עבודה 31";
+  const built = buildQuotes(single([
+    item("other", { text: "כלים 60", description: "כלים", quantity_parts: [60], quantity_source: "60" }),
+    item("other", { text: "ספסלים 30", description: "ספסלים", quantity_parts: [30], quantity_source: "30" }),
+    item("other", { text: "ריצוף 1500", description: "ריצוף", unit: "03", quantity_parts: [1500], quantity_source: "1500" }),
+    item("other", { text: "שטיחים 1000", description: "שטיחים", unit: "03", quantity_parts: [1000], quantity_source: "1000" }),
+    item("other", { text: "עבודה 31", description: "עבודה", unit: "09", quantity_parts: [31], quantity_source: "31" }),
+  ]), text);
+  const reply = formatQuotesReply(built);
+  assert.ok(reply.includes("• כלים: 60 יח' (לבדיקה)"));
+  assert.ok(reply.includes("• ספסלים: 30 יח'") && !reply.includes("• ספסלים: 30 יח' (לבדיקה)"));
+  assert.ok(reply.includes('• ריצוף: 1500 מ"ר (לבדיקה)'));
+  assert.ok(reply.includes('• שטיחים: 1000 מ"ר') && !reply.includes('• שטיחים: 1000 מ"ר (לבדיקה)'));
+  assert.ok(reply.includes("• עבודה: 31 קומפ' (לבדיקה)"));
+  assert.equal(built.quotes[0].items[0].quantity, 60); // kept, not changed
+  assert.equal(parseQuotesReply(reply)[0].items[0].quantity, 60); // the marker does not break reading the reply back
+});
+
+test("the unplaced list holds only whole phrases found in the text", () => {
+  const text = "צביעת קיר צביעת תקרה צביעת רצפה לא הובן";
+  const built = buildQuotes({
+    quotes: [{ address: "", party_kind: "other", party_label: "", items: ["צביעת קיר", "צביעת תקרה", "צביעת רצפה"].map(t => item("other", { text: t, description: t })) }],
+    unplaced: ["לא הובן", "מילה", "ביטוי שלא קיים בטקסט"],
+    unreadable: false,
+  }, text);
+  assert.deepEqual(built.unplaced, ["לא הובן"]); // a single word and a phrase that is not in the text never get in
+});
+
+test("the unplaced list shows at most 10 lines, then ועוד N", () => {
+  const entries = Array.from({ length: 15 }, (_, k) => `ביטוי מספר ${k + 1}`);
+  const reply = formatQuotesReply({ quotes: [{ title: "", chapterTitle: CHAPTER.other, subTitle: HOUSE.commonSub, items: [{ unit: "01", quantity: 1, description: "צביעת קיר" }] }], unplaced: entries, addons: [] });
+  const lines = reply.split("\n");
+  const start = lines.indexOf("*לא שובץ:*");
+  assert.equal(lines.slice(start + 1).filter(line => line.startsWith("•")).length, 10);
+  assert.ok(lines.includes("ועוד 5"));
+});
+
+test("titles come from phrases found in the text, at most 60 characters; no address means הצעה <date>", () => {
+  const noAddress = buildQuotes(single([item("other", { text: "צביעת קיר", description: "צביעת קיר" })], { address: "רחוב שלא קיים 5 עיר" }), "צביעת קיר", { now: NOW });
+  assert.equal(noAddress.quotes[0].title, "הצעה 24/10/2026");
+
+  const address = "רחוב הארבעה עשר מאוד ארוך מספר מאה ועשרים וחמש בעיר בלי סוף ובלי גבול";
+  const text = `${address} רכוש משותף צביעת קיר`;
+  const long = buildQuotes(single([item("other", { text: "צביעת קיר", description: "צביעת קיר" })], { address, party_kind: "common_property", party_label: "רכוש משותף" }), text, { now: NOW });
+  assert.ok(long.quotes[0].title.length <= 60);
+  assert.ok(text.includes(long.quotes[0].title.split(" ").slice(0, 3).join(" ")));
+
+  // a party that is not in the text is not invented into the title
+  const noParty = buildQuotes(single([item("other", { text: "צביעת קיר", description: "צביעת קיר" })], { address: "הרצל 5 חיפה", party_kind: "third_party", party_label: "דירה 9 צד ג'" }), "הרצל 5 חיפה צביעת קיר");
+  assert.equal(noParty.quotes[0].title, "הרצל 5 חיפה");
+});
+
+test("two quotes with the same title are merged", () => {
+  const text = "הרצל 5 חיפה צביעת קיר הרצל 5 חיפה צביעת תקרה";
+  const built = buildQuotes({
+    quotes: [
+      { address: "הרצל 5 חיפה", party_kind: "other", party_label: "", items: [item("other", { text: "צביעת קיר", description: "צביעת קיר" })] },
+      { address: "הרצל 5 חיפה", party_kind: "other", party_label: "", items: [item("other", { text: "צביעת תקרה", description: "צביעת תקרה" })] },
+    ],
+    unplaced: [],
+    unreadable: false,
+  }, text);
+  assert.equal(built.quotes.length, 1);
+  assert.deepEqual(built.quotes[0].items.map(i => i.description), ["צביעת קיר", "צביעת תקרה"]);
 });

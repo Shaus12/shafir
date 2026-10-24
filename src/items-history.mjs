@@ -24,7 +24,7 @@ const unitLabels = UNIT_OPTIONS.map(([code, label]) => [code, label]);
 const NO_QTY = " (כמות לא צוינה)";
 
 function parseItemLine(line, subchapter) {
-  const body = line.slice(1).trim();
+  const body = line.slice(1).replace(/\s*\(לבדיקה\)\s*$/, "").trim();
   const cut = body.lastIndexOf(": ");
   if (cut <= 0) return null;
   const description = body.slice(0, cut).trim();

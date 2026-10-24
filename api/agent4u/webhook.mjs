@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { waitUntil } from "@vercel/functions";
 import { SUBCHAPTER_MAP } from "../../src/proposed-items.mjs";
-import { extractQuotes, formatQuotesReply, specToQuote } from "../../src/quote-engine.mjs";
+import { extractQuotes, quoteOutput, specToQuote } from "../../src/quote-engine.mjs";
 import { wantsSkn, isSknOnlyRequest, findLastQuotes, historyFrom, withoutHistory, SKN_HINT, NO_RECENT_ITEMS } from "../../src/items-history.mjs";
 import { isInvoiceRequest, extractInvoice, invoiceTemplate } from "../../src/invoice/extract.mjs";
 import { sealInvoiceToken } from "../../src/invoice/service.mjs";
@@ -406,7 +406,7 @@ async function sendQuotesFiles(clientId, specs, { skn: withSkn = false, xlsx: wi
   for (const spec of specs) {
     if (!spec.items.length) continue;
     const quote = specToQuote(spec);
-    const name = `${stamp} ${safeTitle(spec.title)}`.trim();
+    const name = safeTitle(spec.title) || stamp;
     const title = spec.title ? `${spec.title} – ` : "";
     if (withXlsx) {
       try {
@@ -557,12 +557,10 @@ async function processVoiceNote(mediaUrl, clientId, history = []) {
     }
     const result = await extractQuotes(transcript);
     const skn = wantsSkn(transcript);
-    const hasQuotes = result.quotes.length > 0;
-    const body = hasQuotes || result.unplaced.length
-      ? `${formatQuotesReply(result)}${hasQuotes && !skn ? `\n\n${SKN_HINT}` : ""}`
-      : HELP_MESSAGE;
-    await sendToWorker(clientId, `${transcriptLine(transcript)}\n\n${body}`);
-    return sendQuotesFiles(clientId, result.quotes, { skn });
+    const out = quoteOutput(result, { skn });
+    if (result.unreadable) return sendToWorker(clientId, out.reply);
+    await sendToWorker(clientId, `${transcriptLine(transcript)}\n\n${out.reply ?? HELP_MESSAGE}`);
+    return sendQuotesFiles(clientId, out.specs, { skn });
   } catch (error) {
     console.error("Voice note processing failed", error?.name || "Error");
     return sendToWorker(clientId, VOICE_PROCESS_ERROR);
@@ -951,13 +949,11 @@ export default async function handler(req, res) {
   try {
     const result = await extractQuotes(messageText);
     const skn = wantsSkn(messageText);
-    const hasQuotes = result.quotes.length > 0;
-    const reply = hasQuotes || result.unplaced.length
-      ? `${formatQuotesReply(result)}${hasQuotes && !skn ? `\n\n${SKN_HINT}` : ""}`
-      : HELP_MESSAGE;
+    const out = quoteOutput(result, { skn });
+    const reply = out.reply ?? HELP_MESSAGE;
     const clientId = payload.client?.id;
-    if (hasQuotes && clientId !== undefined && clientId !== null && clientId !== "" && process.env.AGENT4U_API_KEY) {
-      waitUntil(sendQuotesFiles(clientId, result.quotes, { skn }));
+    if (out.specs.length && clientId !== undefined && clientId !== null && clientId !== "" && process.env.AGENT4U_API_KEY) {
+      waitUntil(sendQuotesFiles(clientId, out.specs, { skn }));
     }
     return send(res, 200, { reply });
   } catch (error) {
