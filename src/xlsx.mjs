@@ -68,7 +68,8 @@ function worksheet(q, prices) {
           textCell(`A${itemRow}`, itemLabel(chapter, subchapter, item, itemIndex), 6),
           textCell(`B${itemRow}`, item.description, 6),
           textCell(`C${itemRow}`, unitLabel(item.unit), 6),
-          numberCell(`D${itemRow}`, item.qty),
+          // a missing quantity (0) is an empty cell in the price-less file, never a 0
+          ...(prices || item.qty > 0 ? [numberCell(`D${itemRow}`, item.qty)] : []),
         ];
         if (prices) {
           cells.push(numberCell(`E${itemRow}`, item.price));

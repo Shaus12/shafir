@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { decode1255 } from "../src/skn/codec.mjs";
 import {
-  buildQuotes, extractQuotes, formatQuotesReply, specToQuote, numbersIn, resolveQuantity, normalizeDimensions, quoteOutput,
+  buildQuotes, extractQuotes, formatQuotesReply, specToQuote, numbersIn, resolveQuantity, normalizeDimensions, quoteOutput, locationWithB,
   HOUSE, CHAPTER, ADDON_SOOT_SUCTION, ADDON_GENERAL_CLEAN, SCRAMBLED_REPLY,
 } from "../src/quote-engine.mjs";
 import { parseQuotesReply, findLastQuotes } from "../src/items-history.mjs";
@@ -32,7 +33,7 @@ const MODEL_ANSWER = {
     {
       address: "שמעון התרסי 20 תל אביב", party_kind: "common_property", party_label: "רכוש משותף",
       items: [
-        item("soot_clean", { text: "נקיון ונטרול פיח קומת כניסה, גרם מדרגות 4 קומות", location: "בקומת כניסה ובגרם מדרגות 4 קומות" }),
+        item("soot_clean", { text: "נקיון ונטרול פיח קומת כניסה, גרם מדרגות 4 קומות", location: "קומת כניסה, גרם מדרגות 4 קומות", quantity_parts: [4], quantity_source: "4 קומות" }),
         item("paint_after_soot", { text: 'צביעת הנ"ל במספר שכבות גוון לבן עד לקבלת גוון אחיד ומושלם 5 יחידות', color: "לבן", quantity_parts: [5], quantity_source: "5 יחידות" }),
         item("other", { text: "נקיון חיפוי שיש 5 יחידות", description: "נקיון חיפוי שיש", quantity_parts: [5], quantity_source: "5 יחידות" }),
         item("other", { text: "נקיון ארונות מתכת 2 יחידות בקומה 3 יחידות", description: "נקיון ארונות מתכת", quantity_parts: [2, 3], quantity_source: "2 יחידות בקומה 3 יחידות" }),
@@ -51,9 +52,9 @@ const MODEL_ANSWER = {
         item("ac_replace", { text: "החלפת מזגן שתיים וחצי כוח סוס בסלון", room: "בסלון", hp: 2.5, hp_source: "שתיים וחצי כוח סוס" }),
         item("ac_replace", { text: "החלפת מזגן אחד ורבע כוח סוס בחדר שינה", room: "בחדר שינה", hp: 1.25, hp_source: "אחד ורבע כוח סוס" }),
         item("other", { text: 'פרקט ברצפת המבנה 45 מ"ר', description: "פרקט ברצפת המבנה", unit: "03", quantity_parts: [45], quantity_source: '45 מ"ר' }),
-        item("replace", { text: 'מבואת דירות החלפת פרקט 8 מ"ר', subject: "פרקט במבואת דירות", unit: "03", quantity_parts: [8], quantity_source: '8 מ"ר' }),
-        item("soot_clean", { text: "נטרול פיח וצביעת מבואת דירות", location: "במבואת דירות" }),
-        item("paint_after_soot", { text: "נטרול פיח וצביעת מבואת דירות", location: "במבואת דירות" }),
+        item("replace", { text: 'מבואת דירות החלפת פרקט 8 מ"ר', subject: "פרקט", location: "מבואת דירות", unit: "03", quantity_parts: [8], quantity_source: '8 מ"ר' }),
+        // one phrase with two different actions on the same area: the engine makes two items, both with the area
+        item("other", { text: "נטרול פיח וצביעת מבואת דירות" }),
       ],
     },
   ],
@@ -77,7 +78,7 @@ test("the example becomes two quotes titled by address and party, with the damag
 
 test("house wording, units and the quantities stated in the notes", () => {
   assert.equal(common.items[0].description, `${HOUSE.soot} בקומת כניסה ובגרם מדרגות 4 קומות`);
-  assert.equal(common.items[0].quantity, null); // no quantity stated for it: stays missing
+  assert.deepEqual([common.items[0].unit, common.items[0].quantity], ["01", null]); // "4 קומות" only describes the place: no quantity
   assert.equal(common.items[1].description, 'צביעת הנ"ל במספר שכבות בגוון לבן עד לקבלת גוון אחיד ומושלם');
   assert.equal(common.items[1].quantity, 5);
   assert.equal(byDescription(common, "נקיון חיפוי שיש")[0].quantity, 5);
@@ -396,4 +397,136 @@ test("two quotes with the same title are merged", () => {
   }, text);
   assert.equal(built.quotes.length, 1);
   assert.deepEqual(built.quotes[0].items.map(i => i.description), ["צביעת קיר", "צביעת תקרה"]);
+});
+
+// ---------- house wording only where it belongs ----------
+
+const rows = quote => quote.items.map(i => [i.description, i.unit, i.quantity]);
+
+test("the expected items of the example, quote by quote", () => {
+  assert.deepEqual(rows(common), [
+    [`${HOUSE.soot} בקומת כניסה ובגרם מדרגות 4 קומות`, "01", null],
+    ['צביעת הנ"ל במספר שכבות בגוון לבן עד לקבלת גוון אחיד ומושלם', "01", 5],
+    ["נקיון חיפוי שיש", "01", 5],
+    ["נקיון ארונות מתכת", "01", 6],
+    ["נקיון וצביעת דלת מעלית", "01", 2],
+    ["קרצוף רצפה כולל מבואת כניסה", "01", 5],
+  ]);
+  assert.deepEqual(rows(third), [
+    ["פרוק ופינוי חלון אלומיניום זכוכית בלבד במידות 242/217", "01", 1],
+    ['או"ה חלון אלומיניום זכוכית בלבד במידות 242/217 כדוגמת הקיים', "01", 1],
+    [HOUSE.soot, "03", 50],
+    [HOUSE.paint, "03", 50],
+    ["צביעת דלתות", "01", 3],
+    ["נקיון צמודי מבנה", "09", 1],
+    ["פרוק ופינוי מזגן בסלון", "01", 1],
+    ['או"ה מזגן מפוצל 2.5 כ"ס בסלון כדוגמת הקיים', "01", 1],
+    ["פרוק ופינוי מזגן בחדר שינה", "01", 1],
+    ['או"ה מזגן מפוצל 1.25 כ"ס בחדר שינה כדוגמת הקיים', "01", 1],
+    ["פרוק ופינוי פרקט ברצפת המבנה", "03", 45],
+    ['או"ה פרקט ברצפת המבנה כדוגמת הקיים', "03", 45],
+    ["פרוק ופינוי פרקט במבואת דירות", "03", 8],
+    ['או"ה פרקט במבואת דירות כדוגמת הקיים', "03", 8],
+    [`${HOUSE.soot} במבואת דירות`, "01", null],
+    [`${HOUSE.paint} במבואת דירות`, "01", null],
+  ]);
+  assert.deepEqual(result.unplaced, []);
+});
+
+test("soot and painting wording only for walls, ceilings or an area; a specific element keeps its words", () => {
+  const text = "נקיון חיפוי שיש 5 יחידות נקיון פיח דלת מעלית נטרול פיח מקירות ותקרה צבע דלתות שלוש יחידות צביעת קירות";
+  const built = buildQuotes(single([
+    // the model labels all of them with the house kinds; the code decides from the words
+    item("soot_clean", { text: "נקיון חיפוי שיש 5 יחידות", description: "נקיון חיפוי שיש", quantity_parts: [5], quantity_source: "5 יחידות" }),
+    item("soot_clean", { text: "נקיון פיח דלת מעלית", description: "נקיון פיח דלת מעלית" }),
+    item("soot_clean", { text: "נטרול פיח מקירות ותקרה" }),
+    item("paint_after_soot", { text: "צבע דלתות שלוש יחידות", description: "צבע דלתות", quantity_parts: [3], quantity_source: "שלוש יחידות" }),
+    item("paint_after_soot", { text: "צביעת קירות", description: "צביעת קירות" }),
+  ]), text);
+  assert.deepEqual(rows(built.quotes[0]), [
+    ["נקיון חיפוי שיש", "01", 5],
+    ["נקיון פיח דלת מעלית", "01", null],
+    [HOUSE.soot, "01", null],
+    ["צביעת דלתות", "01", 3],
+    ["צביעת קירות", "01", null], // not right after its soot cleaning (the element painting came between)
+  ]);
+});
+
+test("painting wording needs the soot cleaning right before it", () => {
+  const text = "נטרול פיח מקירות ותקרה נקיון חיפוי שיש צביעת קירות ותקרה";
+  const built = buildQuotes(single([
+    item("soot_clean", { text: "נטרול פיח מקירות ותקרה" }),
+    item("other", { text: "נקיון חיפוי שיש", description: "נקיון חיפוי שיש" }),
+    item("paint_after_soot", { text: "צביעת קירות ותקרה", description: "צביעת קירות ותקרה" }),
+  ]), text);
+  assert.equal(built.quotes[0].items[2].description, "צביעת קירות ותקרה");
+});
+
+test("a location is joined with ב", () => {
+  assert.equal(locationWithB("קומת כניסה, גרם מדרגות 4 קומות"), "בקומת כניסה ובגרם מדרגות 4 קומות");
+  assert.equal(locationWithB("קומת כניסה וגרם מדרגות"), "בקומת כניסה ובגרם מדרגות");
+  assert.equal(locationWithB("מבואת דירות"), "במבואת דירות");
+  assert.equal(locationWithB("בקומה 3"), "בקומה 3");
+});
+
+test("two actions on one area are two items with the area, once; one element's cleaning and painting is one item", () => {
+  const text = "נטרול פיח וצביעת מבואת דירות נקיון וצביעת דלת מעלית 2 יחידות";
+  const phrase = "נטרול פיח וצביעת מבואת דירות";
+  // whether the model returns the phrase once or already split in two, the result is the same pair
+  for (const items of [
+    [item("other", { text: phrase })],
+    [item("soot_clean", { text: phrase }), item("paint_after_soot", { text: phrase })],
+  ]) {
+    const built = buildQuotes(single([...items, item("other", { text: "נקיון וצביעת דלת מעלית 2 יחידות", description: "נקיון וצביעת דלת מעלית", quantity_parts: [2], quantity_source: "2 יחידות" })]), text);
+    assert.deepEqual(rows(built.quotes[0]), [
+      [`${HOUSE.soot} במבואת דירות`, "01", null],
+      [`${HOUSE.paint} במבואת דירות`, "01", null],
+      ["נקיון וצביעת דלת מעלית", "01", 2],
+    ]);
+  }
+});
+
+test("replacements keep the location", () => {
+  const built = buildQuotes(single([item("replace", { text: 'מבואת דירות החלפת פרקט 8 מ"ר', subject: "פרקט", location: "מבואת דירות", unit: "03", quantity_parts: [8], quantity_source: '8 מ"ר' })]), 'מבואת דירות החלפת פרקט 8 מ"ר');
+  assert.deepEqual(rows(built.quotes[0]), [["פרוק ופינוי פרקט במבואת דירות", "03", 8], ['או"ה פרקט במבואת דירות כדוגמת הקיים', "03", 8]]);
+});
+
+test("multiplication: <n> <unit> בקומה <m> <יחידות|קומות>", () => {
+  assert.equal(resolveQuantity([2, 3], "2 יחידות בקומה 3 יחידות", "2 יחידות בקומה 3 יחידות").quantity, 6);
+  assert.equal(resolveQuantity([2, 3], "2 יחידות בקומה 3 קומות", "2 יחידות בקומה 3 קומות").quantity, 6);
+  assert.equal(resolveQuantity([2, 3], "2 ארונות בקומה 3 קומות", "2 ארונות בקומה 3 קומות").quantity, 6);
+  assert.equal(resolveQuantity([2, 3], "2 יחידות 3 קומות", "2 יחידות 3 קומות").quantity, null);
+});
+
+test("a number that only describes the place is not the quantity", () => {
+  const text = "נטרול פיח גרם מדרגות 4 קומות נטרול פיח גרם מדרגות 4 קומות 5 יחידות";
+  const built = buildQuotes(single([
+    item("soot_clean", { text: "נטרול פיח גרם מדרגות 4 קומות", location: "גרם מדרגות 4 קומות", quantity_parts: [4], quantity_source: "4 קומות", unit: "03" }),
+    item("soot_clean", { text: "נטרול פיח גרם מדרגות 4 קומות 5 יחידות", location: "גרם מדרגות 4 קומות", quantity_parts: [5], quantity_source: "5 יחידות" }),
+  ]), text);
+  assert.deepEqual(built.quotes[0].items.map(i => [i.unit, i.quantity]), [["01", null], ["01", 5]]);
+});
+
+test("a verb that is part of an item's own action is never listed as not placed", () => {
+  const text = "נקיון חיפוי שיש 5 יחידות החלפת מזגן בסלון";
+  const built = buildQuotes({ quotes: [{ address: "", party_kind: "other", party_label: "", items: [
+    item("other", { text: "נקיון חיפוי שיש 5 יחידות", description: "נקיון חיפוי שיש", quantity_parts: [5], quantity_source: "5 יחידות", leftover: "נקיון" }),
+    item("ac_replace", { text: "החלפת מזגן בסלון", room: "בסלון", leftover: "החלפת" }),
+  ] }], unplaced: ["החלפת מזגן", "נקיון חיפוי", "מזגן בסלון"], unreadable: false }, text);
+  assert.deepEqual(built.unplaced, []);
+});
+
+test("a missing quantity is an empty cell in Excel; the SKN writer writes 0.00 and keeps the item", async () => {
+  const quote = specToQuote({ title: "בדיקה", chapterTitle: CHAPTER.other, subTitle: HOUSE.commonSub, items: [
+    { unit: "01", quantity: null, description: "בלי כמות" },
+    { unit: "01", quantity: 5, description: "עם כמות" },
+  ] });
+  const xml = await quoteToXlsx(quote, { prices: false }).text();
+  assert.equal((xml.match(/<c r="D\d+"/g) || []).length, 2); // the header "כמות" and the one item with a quantity
+  assert.ok(!xml.includes("<v>0</v>"));
+
+  const skn = quoteToSkn(quote);
+  assert.ok(decode1255(skn).includes("010101010" + "01" + "000000.00")); // no way to leave it empty in the fixed-width format
+  const back = sknToQuote(skn).chapters[0].subchapters[0].items;
+  assert.deepEqual(back.map(i => [i.unit, i.qty]), [["01", 0], ["01", 5]]);
 });

@@ -111,7 +111,7 @@ const WORD_ALTERNATIVES = [...WORDS.keys(), ...FRACTIONS.keys()].sort((a, b) => 
 const NUMBER = `(?:\\d+(?:[.,]\\d+)?|(?:${WORD_ALTERNATIVES})(?:\\s+ו?(?:${WORD_ALTERNATIVES}))*)`;
 const PRODUCT_PATTERNS = [
   // "<n> ב<קומה|דירה|חדר> <m> <קומות|דירות|חדרים>" ("2 יחידות בקומה 3 יחידות" is accepted too), "<n> כפול <m>", "<n> פי <m>"
-  new RegExp(`(?<=^|\\s)(${NUMBER})(?:\\s+(?:יחידות|יחידה|יח))?\\s+ב(?:קומה|דירה|חדר)\\s+(${NUMBER})(?:\\s+(?:קומות|דירות|חדרים|יחידות))?(?=\\s|$)`),
+  new RegExp(`(?<=^|\\s)(${NUMBER})(?:\\s+\\S+)?\\s+ב(?:קומה|דירה|חדר)\\s+(${NUMBER})(?:\\s+(?:קומות|דירות|חדרים|יחידות))?(?=\\s|$)`),
   new RegExp(`(?<=^|\\s)(${NUMBER})\\s+כפול\\s+(${NUMBER})(?=\\s|$)`),
   new RegExp(`(?<=^|\\s)(${NUMBER})\\s+פי\\s+(${NUMBER})(?=\\s|$)`),
 ];
@@ -155,42 +155,76 @@ const ACTION_WORDS = /ני?קי?ון|ניקוי|נקה|נטרול|צבע|צבי�
 const REPLACEABLE = /(^|\s)[בהלוכש]?(?:פרקט|חלון|חלונות|דלת|דלתות|ארון|ארונות|כיור|כיורים|אסלה|ברז|ברזים|מזגן|מזגנים|תריס|תריסים|מראה|מקלחון|אמבטיה)(?=\s|$)/;
 // Singular countable nouns: with no stated quantity the item is one.
 const SINGULAR = /(^|\s)[בהלוכש]?(?:חלון|דלת|ארון|כיור|אסלה|ברז|מזגן|תריס|מראה|מקלחון|אמבטיה)(?=\s|$)/;
+// A specific element: cleaning or painting it keeps the element and the verb as written (no house wording).
+const SPECIFIC_ELEMENT = /(^|\s)[בהלוכש]?(?:שיש|חיפוי|ארון|ארונות|דלת|דלתות|חלון|חלונות|רצפה|רצפת|ריצוף|פרקט|כיור|כיורים|מראה|מעקה|מעקות|שער|גדר|רהיט|רהיטים|תריס|תריסים|אסלה|ברז|מקלחון|אמבטיה|מזגן)(?=\s|$)/;
+const SOOT_WORDS = /פיח|נטרול/;
+const PAINT_WORDS = /צביע|צבע/;
+// Words of an action on its own (never worth listing as "not placed").
+const ACTION_ONLY = /^(?:ה?חלפ\S*|פירוק|פרוק|אספק\S*|התקנ\S*|ני?קי?ון|ניקוי|נטרול|צביע\S*|צבע|קרצוף|תיקון|של|כולל|את|על)$/;
+const isActionOnly = phrase => textKey(phrase).split(" ").filter(Boolean).every(word => ACTION_ONLY.test(word) || ACTION_WORDS.test(word));
 
 const isBareElement = text => REPLACEABLE.test(clean(text)) && !ACTION_WORDS.test(clean(text));
 
+/** "קומת כניסה, גרם מדרגות 4 קומות" -> "בקומת כניסה ובגרם מדרגות 4 קומות": every place joined with "ב". */
+export function locationWithB(location) {
+  const parts = clean(location).split(/\s*,\s*|\s+ו(?=[א-ת])/).filter(Boolean);
+  return parts.map((part, index) => `${index ? "ו" : ""}${part.startsWith("ב") ? part : `ב${part}`}`).join(" ");
+}
+
+/** The area a joint "...וצביעת <area>" phrase paints, when the model gave no location. */
+const areaAfterPainting = phrase => /צביע(?:ת|ה)\s+(?:של\s+)?(.+?)(?:\s+\d.*)?$/.exec(clean(phrase))?.[1] ?? "";
+
+/** The verb "צבע X" is written "צביעת X". */
+const plainName = description => clean(description).replace(/^צבע\s+/, "צביעת ");
+
 /** House-style items for one model item: [{ unit, quantity, description }], plus notes for the unplaced list. */
 function itemsFor(item, ctx) {
-  const { quantity, problem } = resolveQuantity(item.quantity_parts, item.quantity_source, ctx.text);
-  // Notes for the unplaced list always carry the item's whole phrase, never single words.
   const phrase = clean(item.text) || clean(item.description);
+  if (ctx.expanded.has(phrase)) return []; // the model already split this phrase, and the pair was built once
+  const analysis = `${clean(item.text)} ${clean(item.description)} ${clean(item.subject)}`;
+
+  let { quantity, problem } = resolveQuantity(item.quantity_parts, item.quantity_source, ctx.text);
+  // A number that only describes the place ("גרם מדרגות 4 קומות") is not the quantity.
+  const source = norm(item.quantity_source);
+  const placeOnly = quantity !== null && (/^\d+(?:[.,]\d+)?\s+(?:קומות|קומה|דירות|חדרים)$/.test(source) || (clean(item.location) && norm(item.location).includes(source)));
+  if (placeOnly) quantity = null;
+
+  // Notes for the unplaced list always carry the item's whole phrase, never single words.
   if (problem) ctx.unplaced.push(`${phrase} (כמות לא אומתה)`);
-  if (clean(item.leftover) && grounded(item.leftover, ctx.haystack)) ctx.unplaced.push(`${phrase} (פרט שלא נכלל בסעיף: ${clean(item.leftover)})`);
-  const unit = UNIT_CODES.includes(item.unit) ? item.unit : "01";
+  const leftover = clean(item.leftover);
+  if (leftover && grounded(leftover, ctx.haystack) && !isActionOnly(leftover)) ctx.unplaced.push(`${phrase} (פרט שלא נכלל בסעיף: ${leftover})`);
+
+  const unit = !placeOnly && UNIT_CODES.includes(item.unit) ? item.unit : "01";
   const make = (description, overrides = {}) => ({ unit, quantity, description: normalizeDimensions(clean(description)), ...overrides });
+  const place = withLocation => (withLocation ? locationWithB(withLocation) : "");
+  const wasSoot = ctx.lastSoot;
+  ctx.lastSoot = false;
+
   // Removal and installation of X, with the same quantity; a singular noun with no stated quantity is one unit.
   const replacement = subject => {
     const one = quantity === null && item.singular_noun === true && SINGULAR.test(clean(subject));
     const overrides = one ? { unit: "01", quantity: 1 } : {};
-    return [make(`פרוק ופינוי ${subject}`, overrides), make(`או"ה ${subject} כדוגמת הקיים`, overrides)];
+    const located = join(subject, item.location && !clean(subject).includes(clean(item.location)) ? place(item.location) : "");
+    return [make(`פרוק ופינוי ${located}`, overrides), make(`או"ה ${located} כדוגמת הקיים`, overrides)];
+  };
+  const sootItem = location => {
+    ctx.lastSoot = true;
+    return make(join(HOUSE.soot, place(location)));
+  };
+  const paintItem = location => {
+    const color = clean(item.color).replace(/^גוון\s+/, "");
+    const named = color && norm(ctx.text).includes(norm(color)); // a colour that is not in the text is ignored
+    return make(join(named ? HOUSE.paintColor(color) : HOUSE.paint, place(location)));
   };
 
   switch (item.kind) {
-    case "soot_clean":
-      ctx.sootSeen = true;
-      return [make(join(HOUSE.soot, item.location))];
-    case "paint_after_soot": {
-      if (!ctx.sootSeen) return [make(item.description || item.text)];
-      const color = clean(item.color).replace(/^גוון\s+/, "");
-      const named = color && norm(ctx.text).includes(norm(color)); // a colour that is not in the text is ignored
-      return [make(join(named ? HOUSE.paintColor(color) : HOUSE.paint, item.location))];
-    }
     case "replace": {
       // Only an element of the fixed list is ever replaced; walls, ceilings, surfaces and anything else stay as written.
       const subject = clean(item.subject) || clean(item.description);
       return REPLACEABLE.test(subject) ? replacement(subject) : [make(clean(item.description) || subject)];
     }
     case "ac_replace": {
-      if (!/מזגן/.test(`${item.text} ${item.subject} ${item.description}`)) return [make(clean(item.description) || phrase)];
+      if (!/מזגן/.test(analysis)) return [make(clean(item.description) || phrase)];
       const hp = resolveQuantity([item.hp], item.hp_source, ctx.text);
       if (hp.problem) ctx.unplaced.push(`${phrase} (כוח סוס לא אומת)`);
       const count = quantity ?? 1;
@@ -201,9 +235,23 @@ function itemsFor(item, ctx) {
       ];
     }
     case "cleaning_attached":
-      return [make(join(HOUSE.attached, item.location), { unit: "09", quantity: 1 })];
+      return [make(join(HOUSE.attached, place(item.location)), { unit: "09", quantity: 1 })];
     default: {
-      const description = item.description || item.text;
+      // soot_clean, paint_after_soot, other: the house wording is decided here from the words of the phrase.
+      const soot = SOOT_WORDS.test(analysis);
+      const paint = PAINT_WORDS.test(analysis);
+      const specific = SPECIFIC_ELEMENT.test(analysis);
+      const area = clean(item.location) || areaAfterPainting(phrase);
+      if (soot && paint && !specific) {
+        // Two different actions on the same area: two items, both with the area.
+        ctx.expanded.add(phrase);
+        const first = sootItem(area);
+        ctx.lastSoot = false;
+        return [first, paintItem(area)];
+      }
+      if (soot && !specific) return [sootItem(item.location)];
+      if (paint && !soot && !specific && wasSoot) return [paintItem(item.location)];
+      const description = plainName(item.description || item.text);
       return isBareElement(description) ? replacement(description) : [make(description)];
     }
   }
@@ -253,13 +301,16 @@ function cutTitle(title) {
  */
 export function buildQuotes(raw, text, { now = new Date() } = {}) {
   const haystack = textKey(text);
-  const unplaced = (Array.isArray(raw?.unplaced) ? raw.unplaced : []).map(clean).filter(entry => wordCount(entry) >= 2 && grounded(entry, haystack));
+  // Model-listed phrases: whole phrases of the text only, and never a part of an item's own action or words.
+  const itemTexts = (Array.isArray(raw?.quotes) ? raw.quotes : []).flatMap(quote => (Array.isArray(quote.items) ? quote.items : []).map(item => textKey(item.text)));
+  const unplaced = (Array.isArray(raw?.unplaced) ? raw.unplaced : []).map(clean)
+    .filter(entry => wordCount(entry) >= 2 && grounded(entry, haystack) && !isActionOnly(entry) && !itemTexts.some(itemText => itemText.includes(textKey(entry))));
   const phrases = [];
   const built = [];
   const rawQuotes = Array.isArray(raw?.quotes) ? raw.quotes : [];
 
   for (const rawQuote of rawQuotes) {
-    const ctx = { text, haystack, unplaced, sootSeen: false };
+    const ctx = { text, haystack, unplaced, lastSoot: false, expanded: new Set() };
     const rawItems = Array.isArray(rawQuote.items) ? rawQuote.items : [];
     for (const item of rawItems) phrases.push(item.text);
     const items = rawItems.flatMap(item => itemsFor(item, ctx)).filter(item => item.description);
@@ -435,9 +486,9 @@ export const prompt = `אתה קורא הערות שטח של עובד בחבר�
 - שורות שאחרי סימון של צד שייכות לאותו צד עד הסימון הבא.
 
 סעיפים: כל חלק בטקסט הופך לסעיף. משפט אחד עם כמה עבודות ("נטרול פיח וצביעת מבואת דירות") מתפצל לכמה סעיפים. kind:
-- soot_clean: ניקיון / נטרול פיח. location: מיקום או פרט שנכתב (למשל "בקומת כניסה ו-4 קומות").
+- soot_clean: ניקיון / נטרול פיח. location: מיקום או פרט שנכתב, כפי שנכתב בטקסט ובלי אות ב' בהתחלה (למשל "קומת כניסה, גרם מדרגות 4 קומות").
 - paint_after_soot: צביעה אחרי ניקוי פיח (כולל "צביעת הנ"ל" וצביעת קירות ותקרה). location רק אם נכתב מקום מפורש אחר. color: הצבע כפי שנכתב ("לבן" מתוך "גוון לבן"), אחרת "". פרט אחר שלא נכנס לסעיף כתוב ב-leftover.
-- replace: החלפה, פירוק, אספקה והתקנה של דבר, וגם אלמנט שנכתב בלי שום פועל (בלי ניקיון, צביעה, תיקון וכדומה), כמו "פרקט ברצפת המבנה 45 מ"ר", "חלון", "דלת", "ארון". subject: מה מוחלף כולל כל מיקום ופרט שנכתב (למשל "חלון אלומיניום זכוכית בלבד במידות 2.42 על 2.170"). אל תפצל בעצמך לפרוק ולהתקנה.
+- replace: החלפה, פירוק, אספקה והתקנה של דבר, וגם אלמנט שנכתב בלי שום פועל (בלי ניקיון, צביעה, תיקון וכדומה), כמו "פרקט ברצפת המבנה 45 מ"ר", "חלון", "דלת", "ארון". subject: מה מוחלף עם פרטיו (למשל "חלון אלומיניום זכוכית בלבד במידות 2.42 על 2.170"), ו-location: המיקום שנכתב בלי ב' (למשל "מבואת דירות" מתוך "מבואת דירות החלפת פרקט"). אל תפצל בעצמך לפרוק ולהתקנה.
 - ac_replace: החלפת מזגן. room: החדר כפי שנכתב ("בסלון"). hp: כוח סוס כמספר ו-hp_source: המילים שבהן נכתב ("שתיים וחצי כוח סוס"). אחרת null ו-"".
 - cleaning_attached: "ניקיון צמודי מבנה".
 - other: כל דבר אחר. description: הסעיף כפי שנכתב, בלי להמציא. text: המילים המקוריות של החלק.
@@ -447,7 +498,7 @@ export const prompt = `אתה קורא הערות שטח של עובד בחבר�
 - quantity_parts: המספרים שהטקסט אומר על הסעיף, כמספרים. מילים הופכות למספר ("שתיים וחצי" = 2.5, "אחד ורבע" = 1.25, "שלוש" = 3). כפל רק בתבנית מפורשת באותו ביטוי: "<n> בקומה <m> קומות" (או דירה/חדר), "<n> כפול <m>", "<n> פי <m>", ואז שני גורמים: [2, 3]. כל צמד מספרים אחר אינו כפל: קח רק את המספר שמתאר את הכמות. quantity_source: המילים המקוריות שמהן נלקחו המספרים, מילה במילה.
 - אם לא נאמרה כמות: quantity_parts ריק ו-quantity_source "". אסור להמציא או לשנות כמות.
 - singular_noun: true רק כשלא נאמרה כמות ושם הפריט בלשון יחיד ("חלון", "דלת", "מזגן", "כיור"). רבים או לא ברור: false.
-- מידות (אורך על רוחב) אינן כמות.
+- מידות (אורך על רוחב) אינן כמות. מספר שמתאר רק את המקום ("גרם מדרגות 4 קומות") אינו כמות.
 
 text בכל סעיף, address ו-party_label: העתק מילה במילה מההודעה, בלי לתקן או לשנות סדר.
 unplaced: ביטויים שלמים מההודעה (לא מילים בודדות) שלא ניתן להפוך לסעיף, במילים המקוריות. שום דבר לא נזרק.
